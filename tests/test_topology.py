@@ -1,7 +1,7 @@
 from mucus.config import Config
 from mucus.topology import Topology
 
-cfg_path = "tests/connected-S-mesh/parameters/param_connected-S-mesh.toml"
+cfg_path = "tests/data/connected-S-mesh/parameters/param_connected-S-mesh.toml"
 cfg = Config.from_toml(cfg_path)
 top = Topology(cfg)
 

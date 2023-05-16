@@ -3,6 +3,8 @@ trajectories/
 figures/
 distances/
 systems/
+utils/
+data/
 
 # ignore files
 notes.txt

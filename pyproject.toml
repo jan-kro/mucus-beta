@@ -1,13 +1,15 @@
 [tool.poetry]
-name = "mucus-sim"
+name = "mucus"
 version = "0.1.0"
-description = ""
-authors = ["Your Name <you@example.com>"]
+description = "Simulation package of hydrogel systems"
+authors = ["Jan Maria Kroissenbrunner <janmak98@zedat.fu-berlin.de>"]
 readme = "README.md"
-packages = [{include = "mucus_sim"}]
+packages = [{include = "mucus"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
+numpy = "^1.23.5"
+toml = "0.10.2"
 
 
 [build-system]

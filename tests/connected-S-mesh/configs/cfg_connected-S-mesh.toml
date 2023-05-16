@@ -4,4 +4,4 @@ n_beads=196
 timestep=1
 lbox=44.6616716793309
 name_sys="connected-S-mesh"
-dir_sys="/home/janmak98/mucus/mucus/tests/test_files/connected-S-mesh"
+dir_sys="/home/janmak98/mucus/tests/connected-S-mesh"

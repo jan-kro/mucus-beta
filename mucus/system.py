@@ -87,8 +87,7 @@ class System:
         # load positions
         self.set_positions(self.topology.positions)
         
-        self.create_topology_pdb()
-    
+
     def print_sim_info(self):
         """
         print the config
@@ -220,6 +219,42 @@ class System:
         self.force_Debye()
         
         return
+    
+    def get_forces_test(self, output=False):
+        """
+        for testing the forces
+        """
+        
+        print("Position")
+        print(self.positions)
+        
+        self.get_distances_directions()
+        
+        #delete old forces
+        self.forces = np.zeros((self.n_beads, 3))
+        self.force_NearestNeighbours()
+        print("nearest neighbours")
+        print(self.forces)
+        
+        force_nn = deepcopy(self.forces)
+        
+        self.forces = np.zeros((self.n_beads, 3))
+        self.force_LennardJones_cutoff()
+        print("Lennard Jones")
+        print(self.forces)
+        
+        force_lj = deepcopy(self.forces)
+        
+        self.forces = np.zeros((self.n_beads, 3))
+        self.force_Debye()
+        print("Debye")
+        print(self.forces)
+        
+        force_deb = deepcopy(self.forces)
+        
+        if output == True:
+            return force_nn, force_lj, force_deb
+
     
     def force_NearestNeighbours(self):
         """
@@ -426,40 +461,6 @@ class System:
         return Q, S_q
     
     
-    def create_topology_pdb(self, overwrite=False):
-        """
-        Creates a pdb topology of the current system
-        """
-        
-        pdb_file = self.create_fname(filetype="topology", overwrite=overwrite)
-        r0 = 2
-
-        with open(pdb_file, "w") as f:
-            f.write("HEADER\t"+self.config.name_sys+"\n")
-            f.write(f"CRYST1   60.000   60.000   60.000  90.00  90.00  90.00 P 1           1 \n")
-            
-            # create chain along the x-axis
-            for k in range(self.n_beads):
-                #f.write(f"HETATM{k+1:5d}	 CA	 HET X       {k*chain_beed_distance+chain_beed_distance:6.3f}   0       0  1.00  0.00          Ca  \n")
-                f.write(f"HETATM{k+1:5d} CA   HET X{k+1:4d}    {k*r0+r0:8.3f}{0.0:8.3f}{0.0:8.3f}{1.0:6.2f}{0.0:6.2f}           C  \n")
-            #terminate chain
-            f.write(f"TER    {k+2:4d}      HET X {k+1:3d}\n")
-            
-            # add bonds
-            
-            # TODO change, so that bonds are created from self.bonds
-            # if self.bonds is None:
-            f.write(f"CONECT{1:5d}{2:5d}\n") #first beed
-            for k in range(2, self.n_beads):
-                f.write(f"CONECT{k:5d}{k-1:5d}{k+1:5d}\n") #middle beeds
-            f.write(f"CONECT{self.n_beads:5d}{self.n_beads-1:5d}\n") #last beed
-                    
-            
-            f.write("END\n")
-            f.close()
-        
-        return
-    
     def create_fname(self, 
                      filetype: str = "trajectory", 
                      overwrite: bool = False):
@@ -470,32 +471,18 @@ class System:
         
         Filetypes:
             "trajectory"
-            "topology"
             "config"
-            "bonds"
             "init_pos"
-            "mobilities"
-            "radii"
-            "charges"
-            "force_constants"
-            "epsilon_LJ"
-            "sigma_LJ"
+            "parameters"
             "rdf"
             "structure_factor"
         """
         
         # if the system should not be overwritten change the version
         dir_dict = {"trajectory":       ("/trajectories/traj_",                 ".gro"),
-                    "topology":         ("/topologies/top_",                    ".pdb"),
                     "config":           ("/configs/cfg_",                       ".toml"),
-                    "bonds":            ("/parameters/bonds/bonds_",            ".npy"),
+                    "parameters":       ("/parameters/param_",                  ".toml"),
                     "init_pos":         ("/initial_positions/xyz_",             ".npy"),
-                    "mobilities":       ("/parameters/mobilities/mu_",          ".npy"),
-                    "radii":            ("/parameters/radii/r_",                ".npy"),
-                    "charges":          ("/parameters/charges/q_",              ".npy"),
-                    "force_constants":  ("/parameters/force_constants/k_",      ".npy"),
-                    "epsilon_LJ":       ("/parameters/lj_parameters/eps_lj_",   ".npy"),
-                    "sigma_LJ":         ("/parameters/lj_parameters/sigma_lj_", ".npy"),
                     "rdf":              ("/results/rdf/rdf_",                   ".npy"),
                     "structure_factor": ("/results/structure_factor/Sq_",       ".npy")}
         
@@ -505,6 +492,13 @@ class System:
                 k_max = 0
                 # check if any file already exists
                 for rel_path, ftype in dir_dict.values():
+                    
+                    # do not check initialisation files, since they must exist beforhand
+                    if ftype == ".toml":
+                        continue
+                    if rel_path == "/initial_positions/xyz_":
+                        continue
+                    
                     fname = self.config.dir_sys + rel_path + self.config.name_sys + ftype
                     k = 0
                     while os.path.exists(fname):
@@ -527,6 +521,39 @@ class System:
         path = Path(fname).parent
         if os.path.exists(path) == False:
             os.makedirs(path)
+        
+        # TODO implement this instead of the above
+        # head_tail = os.path.split(fname)
+        # base = head_tail[0]
+        # name_tot, ext = os.path.splitext(head_tail[1])
+        # split_arg = "_v"
+
+        # name_version = name_tot.split(split_arg)
+        # if len(name_version) == 1:
+        #     name = name_version[0]
+        #     version = 0
+        # else:
+        #     try:
+        #         # make sure that version is an integer, otherwise it might just be a random "_vABC" string (idk eg. xyz_variable_input.npy)
+        #         version = int(name_version[-1])
+        #         name = name_version[0]
+        #         # reassemble name in case there is a second "_v" in the name
+        #         for part in name_version[1:-1]:
+        #             name += split_arg + part
+        #     except:
+        #         # use total name as name
+        #         name = name_tot
+        #         version = 0
+
+        # print(base, name, version, ext)
+
+        # if overwrite == False:
+        #     version += 1
+        #     while os.path.exists(base + "/" + name + split_arg + str(version) + ext):
+        #         version += 1
+
+        # if version > 0:
+        #     fname = base + "/" + name + split_arg + str(version) + ext
         
         return fname
     
@@ -629,7 +656,7 @@ class System:
         
         return
     
-    def simulate(self, steps=None, save_sys=True, overwrite_sys=False):
+    def simulate(self, steps=None, save_sys=True, overwrite_sys=False, report_time=True, report_stride=1000):
         """
         Simulates the brownian motion of the system with the defined forcefield using forward Euler.
         """
@@ -646,6 +673,7 @@ class System:
         idx_traj = 1 # because traj[0] is already the initial position
         
         fname_traj = self.create_fname(filetype="trajectory", overwrite=overwrite_sys)
+        self.write_frame_gro(self.n_beads, self.positions, 0.0, fname_traj, comment=f"traj step 0") # write frame 0 with initial positions
         
         for step in range(1, steps):
             
@@ -653,42 +681,29 @@ class System:
             self.get_distances_directions()
             
             # get forces
-            #self.get_forces_test()
             self.get_forces()
             
             # integrate
-            # NOTE: the timestep of the integrator is already implicitly contained in the particle mobility
             self.positions = self.positions + self.config.timestep*self.topology.mobility*self.forces + self.force_Random()
             
             # apply periodic boundary conditions
             self.apply_pbc()
-            
-            # This would be needed if the velovity is calculated:
-            #self.positions_new = self.positions + self.mobility*self.forces + self.force_Random()
-            #self.velocities = (self.positions - self.positions_new)
-            #self.positions = deepcopy(self.positions_new)
-            
-            # write trajectory for every stride frames
-            # if (self.config.write_traj==True) and (step%self.config.stride==0):
-                
-            #     self.trajectory[idx_traj] = self.positions
-            #     # self.trajectory = np.append(self.trajectory, [self.positions], axis=0)
-            #     idx_traj += 1
+
             
             if (self.config.write_traj==True) and (step%self.config.stride==0):
-                # if self.config.write_traj==True:
-                #     self.trajectory[idx_traj] = self.positions
                     
                 # TODO add condition for direct writing
                 self.write_frame_gro(self.n_beads, self.positions, float(idx_traj), fname_traj, comment=f"traj step {step:d}")
                 idx_traj += 1
             
-            # if np.any(self.distances_bonded > 5):
+            if (report_time==True) and (step%report_stride==0):
+                print(f"Step {step:12d} of {steps:12d} | {int((time()-t_start)//60):6d} min {int((time()-t_start)%60):2d} s")
+            
+            # if np.any(self.distances[self.L_nn] > 5):
             #     print("System exploded")
             #     print("simulation Step", step)
-            #     #print(self.forces)
-            #     #print(self.distances_bonded)
             #     break
+            
         t_end = time()
         
         self.config.simulation_time = t_end - t_start

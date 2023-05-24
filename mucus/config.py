@@ -4,6 +4,7 @@ import toml
 from pydantic import BaseModel, root_validator
 import os
 import time
+from pathlib import Path
 from typing import Optional
 
 
@@ -31,6 +32,13 @@ class Config(BaseModel, arbitrary_types_allowed=True):
     # bonds:              Optional[np.ndarray]    = None 
 
     # TODO add current time and date to properly track everything
+    
+    @classmethod
+    def test(cls):
+        path = Path(str(os.getcwd())).parent
+        path = str(path) + "/tests/data/connected-S-mesh/configs/cfg_connected-S-mesh_v0.toml"
+        data = toml.load(open(path, encoding="UTF-8"))
+        return cls(**data)
     
     @classmethod
     def from_toml(cls, path):

@@ -4,7 +4,6 @@ from .system import System
 from .config import Config
 from .topology import Topology
 from .utils import get_path, load_trajectory
-import mdtraj as md
 
 
 class Analysis:

@@ -1,13 +1,12 @@
 import numpy as np
-import mdtraj as md
 import os
 import toml
 
 from .config import Config
 from .topology import Topology
-from time import time
 from pathlib import Path
 
+from time import time
 from copy import deepcopy
 
 class System:
@@ -26,7 +25,6 @@ class System:
         self.positions              = None
         self.forces                 = None
         self.energy                 = None
-        self.trajectory             = None
         self.distances              = None
         self.directions             = None
         self.idx_table              = None
@@ -47,6 +45,8 @@ class System:
     
     # TODO ceneter box around 0
     
+    # TODO add reporters that get written every stride steps
+    
     def setup(self):
         
         self.n_beads         = self.config.n_beads
@@ -55,7 +55,7 @@ class System:
         self.lB_debye        = self.config.lB_debye # units of beed radii                                       
         
         # TODO implement this properly
-        self.r0_beeds_nm     = 0.1905 # nm calculated for one PEG Monomer
+        self.r0_beeds_nm     = 0.1905 # nm calculated radius for one PEG Monomer
         self.B_debye         = np.sqrt(self.config.c_S)*self.r0_beeds_nm/10 # from the relationship in the Hansing thesis [c_S] = mM
         self.n_frames        = int(np.ceil(self.config.steps/self.config.stride))
  
@@ -340,126 +340,7 @@ class System:
         # since the std of the foce should be sqrt(6*mu) but the std of the absolute randn vector is sqrt(3)
         # the std used here is sqrt(2*mu)
         
-        return np.sqrt(2*self.config.timestep*self.topology.mobility)*np.random.randn(self.n_beads, 3)
-    
-    def rdf(self,
-            r_range = None,
-            n_bins = None,
-            bin_width = 0.05,
-            save=True,
-            overwrite=False):
-        """
-        DEPRECATED
-        """
-        
-        if r_range is None:
-            r_range = np.array([1.5, self.box_length/2])
-            
-        if n_bins is None:   
-            n_bins = int((r_range[1] - r_range[0]) / bin_width)
-        
-        fname_top = self.create_fname(filetype="topology")
-
-        if not os.path.exists(fname_top):
-            self.create_topology_pdb()
-
-
-        natoms = self.n_beads
-        lbox = self.box_length
-
-        # create unic cell information
-        uc_vectors = np.repeat([np.array((lbox, lbox, lbox))], len(self.trajectory), axis=0)
-        uc_angles = np.repeat([np.array((90,90,90))], len(self.trajectory), axis=0)
-
-        # create mdtraj trajectory object
-        trajectory = md.Trajectory(self.trajectory, md.load(fname_top).topology, unitcell_lengths=uc_vectors, unitcell_angles=uc_angles)
-        
-        # create bond pair list
-        pairs = list()
-        for i in range(natoms-1):
-            for j in range(i+1, natoms):
-                pairs.append((i, j))
-                
-        pairs = np.array(pairs)
-        
-        self.number_density = len(pairs) * np.sum(1.0 / trajectory.unitcell_volumes) / natoms / len(trajectory)
-
-        r, gr = md.compute_rdf(trajectory, pairs, r_range=(1.5, 20), bin_width=0.05)
-        
-        if save == True:
-            fname = self.create_fname(filetype="rdf", overwrite=overwrite)
-            np.save(fname, np.array([r, gr]))
-        
-        return r, gr
-    
-    def get_structure_factor_rdf(self,
-                                 radii      = None,
-                                 g_r        = None,     
-                                 rho        = None, 
-                                 qmax       = 2.0, 
-                                 n          = 1000,
-                                 save       = True,
-                                 overwrite  = False):
-        
-        """
-        Compute structure factor S(q) from a radial distribution function g(r).
-        The calculation of S(q) can be further simplified by moving some of 
-        the terms outside the sum. I have left it in its current form so that 
-        it matches S(q) expressions found commonly in books and in literature.
-        
-        Parameters
-        ----------
-        
-        g_r : np.ndarray
-            Radial distribution function, g(r).
-        radii : np.ndarray
-            Independent variable of g(r).
-        rho : float
-            .
-        qmax : floatAverage number density of particles
-            Maximum value of momentum transfer (the independent variable of S(q)).
-        n : int
-            Number of points in S(q).
-        save : bool (default: True)
-            Wether the [Q, S_q] should be saved in an .npy file
-            
-        Returns
-        -------
-        
-        Q : np.ndarray
-            Momentum transfer (the independent variable of S(q)).
-        S_q : np.ndarray
-            Structure factor
-        """
-        
-        # calculate rdf, if not given
-        if g_r is None:
-            radii, g_r = self.rdf(overwrite=overwrite)
-            
-        if rho is None:
-            rho = self.number_density
-        
-        n_r = len(g_r)
-        Q = np.linspace(0.0, qmax, n)
-        S_q = np.zeros_like(Q)
-        
-        dr = radii[1] - radii[0]
-            
-        h_r = g_r - 1
-        
-        S_q[0] = np.sum(radii**2*h_r)
-        
-        for q_idx, q in enumerate(Q[1:]):
-            S_q[q_idx+1] = np.sum(radii*h_r*np.sin(q*radii)/q)
-        
-        S_q = 1 + 4*np.pi*rho*dr * S_q / n_r
-        
-        if save == True:
-            fname = self.create_fname(filetype="structure_factor", overwrite=overwrite)
-            np.save(fname, np.array([Q, S_q]))
-        
-        return Q, S_q
-    
+        return np.sqrt(2*self.config.timestep*self.topology.mobility)*np.random.randn(self.n_beads, 3)    
     
     def create_fname(self, 
                      filetype: str = "trajectory", 
@@ -587,34 +468,6 @@ class System:
         f.write('\n'.join(lines))
         f.write('\n')
         f.close()
-    
-    def load_traj_ndarray(self, traj):
-        
-        self.trajectory = traj
-        self.positions = traj[-1]
-        
-        return
-    
-    def load_traj_gro(self, 
-                      fname: str = None,
-                      overwrite: bool = False):
-         
-        if fname is None:
-            fname = self.create_fname(filetype="trajectory", overwrite=overwrite)
-        if os.path.exists(fname) == False:
-            raise TypeError(f"Error: file \"{fname:s}\" does not exist")
-        
-        if overwrite == False:
-            # TODO remove the "or" once the initialisation is fixed
-            if self.trajectory is None:
-                self.trajectory = md.load(fname).xyz
-            else:
-                raise Exception("Error: System already has a trajectory")
-        else:
-            self.trajectory = md.load(fname).xyz
-        
-        
-        self.positions = self.trajectory[-1]
         
     def save_config(self, overwrite=False):
         """
@@ -695,6 +548,12 @@ class System:
                 # TODO add condition for direct writing
                 self.write_frame_gro(self.n_beads, self.positions, float(idx_traj), fname_traj, comment=f"traj step {step:d}")
                 idx_traj += 1
+                
+                # check if sys exploded
+                if np.any(self.distances[self.L_nn] > self.config.cutoff_pbc):
+                    print("System exploded")
+                    print("simulation Step", step)
+                    break
             
             if (report_time==True) and (step%report_stride==0):
                 print(f"Step {step:12d} of {steps:12d} | {int((time()-t_start)//60):6d} min {int((time()-t_start)%60):2d} s")

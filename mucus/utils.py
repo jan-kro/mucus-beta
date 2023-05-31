@@ -9,53 +9,66 @@ from pathlib import Path
 def get_path(Config: Config, 
              filetype: str = "trajectory",
              overwrite: bool = True):
-        """
-        Creates an outfile str for a specified filetype that includes the absolute directory and filename. 
-        If the directory does not exist, it is created. The overwrite call checks if the system name already 
-        exists in the output directory. If it does, a version str ("_vXX") is appended to the system name. 
-        
-        Filetypes:
-            "trajectory"
-            "config"
-            "init_pos"
-            "parameters"
-            "rdf"
-            "structure_factor"
-        """
-        
-        # if the system should not be overwritten change the version
-        dir_dict = {"trajectory":       ("/trajectories/traj_",                 ".gro"),
-                    "config":           ("/configs/cfg_",                       ".toml"),
-                    "parameters":       ("/parameters/param_",                  ".toml"),
-                    "init_pos":         ("/initial_positions/xyz_",             ".npy"),
-                    "rdf":              ("/results/rdf/rdf_",                   ".npy"),
-                    "structure_factor": ("/results/structure_factor/Sq_",       ".npy")}
-        
-        if overwrite == False:
-            # check if any file already exists
-            for rel_path, ftype in dir_dict.values():
-                fname = Config.dir_sys + rel_path + Config.name_sys + ftype
-                k = 0
-                while os.path.exists(fname):
-                    version = f"_v{k:d}" # update version until no files are found
-                    fname = Config.dir_sys + rel_path + Config.name_sys + version + ftype
-                    k += 1
-                if k > 0:
-                    version = f"_v{k-1:d}"
-                else:
-                    version = ""
-        else:
-            version = ""
-        
-        # create outfile string
-        fname = Config.dir_sys + dir_dict[filetype][0] + Config.name_sys + version + dir_dict[filetype][1]
-        
-        # make dir if path doesnt exist
-        path = Path(fname).parent
-        if os.path.exists(path) == False:
-            os.makedirs(path)
-        
-        return fname
+    """
+    Creates an outfile str for a specified filetype that includes the absolute directory and filename. 
+    If the directory does not exist, it is created. The overwrite call checks if the system name already 
+    exists in the output directory. If it does, a version str ("_vXX") is appended to the system name. 
+    
+    Filetypes:
+        "trajectory"
+        "config"
+        "init_pos"
+        "parameters"
+        "rdf"
+        "structure_factor"
+    """
+    
+    # if the system should not be overwritten change the version
+    dir_dict = {"trajectory":       ("/trajectories/traj_",                 ".gro"),
+                "config":           ("/configs/cfg_",                       ".toml"),
+                "parameters":       ("/parameters/param_",                  ".toml"),
+                "init_pos":         ("/initial_positions/xyz_",             ".npy"),
+                "rdf":              ("/results/rdf/rdf_",                   ".npy"),
+                "structure_factor": ("/results/structure_factor/Sq_",       ".npy")}
+    
+    fname = Config.dir_sys + dir_dict[filetype][0] + Config.name_sys + dir_dict[filetype][1]
+    
+    # split fname into base, name, version and ext
+    head_tail = os.path.split(fname)
+    base = head_tail[0]
+    name_tot, ext = os.path.splitext(head_tail[1])
+    split_arg = "_v"
+
+    name_version = name_tot.split(split_arg)
+    if len(name_version) == 1:
+        name = name_version[0]
+        version = 0
+    else:
+        try:
+            # make sure that version is an integer, otherwise it might just be a random "_vABC" string (idk eg. xyz_variable_input.npy)
+            version = int(name_version[-1])
+            name = name_version[0]
+            # reassemble name in case there is a second "_v" in the name
+            for part in name_version[1:-1]:
+                name += split_arg + part
+        except:
+            # use total name as name
+            name = name_tot
+            version = 0
+
+    if overwrite == False:
+        version += 1
+        while os.path.exists(base + "/" + name + split_arg + str(version) + ext):
+            version += 1
+
+    if version > 0:
+        fname = base + "/" + name + split_arg + str(version) + ext
+    
+    # do not change version for init pos and parameters
+    if filetype == "init_pos" or filetype == "parameters":
+        fname = base + "/" + name + ext
+    
+    return fname
     
 def get_version(config: Config):
     """
@@ -136,22 +149,35 @@ def get_rdf(config: Optional[Config],
                 pairs.append((i, j))
 
 def load_trajectory(config: Optional[Config],
-                    frame_range: tuple = None):
+                    frame_range: list = None):
     """
     Loads Trajectory into numpy array forthe given range of frames.
     If frame_range is None, the whole trajectory is loaded.
     """
+    # TODO implement stride
     from io import StringIO
     
     # if config is given as a path, load it
     if isinstance(config, str):
         config = Config.from_toml(config)
     
-    n_frames = int(np.ceil(config.steps/config.stride))
+    # get traj path
+    fname_traj = get_path(config, filetype="trajectory")
+    
+    # get number of frames
+    with open(fname_traj) as f:
+        n_lines = sum(1 for _ in f)
+    n_frames = int(n_lines / (config.n_beads + 3))
+    
+    # handle frame range input
     if frame_range is None:
         frame_range = (0, n_frames)
-    elif frame_range[0] < 0 or frame_range[1] > n_frames:
-            raise ValueError("frame range out of bounds")
+    if frame_range[0] == None:
+        frame_range[0] = 0
+    if frame_range[1] == None:
+        frame_range[1] = n_frames
+    if frame_range[0] < 0 or frame_range[1] > n_frames:
+        raise ValueError("frame range out of bounds")
     
     #define a np.dtype for gro array/dataset (hard-coded for now)
     gro_dt = np.dtype([('col1', 'S4'), ('col2', 'S4'), ('col3', int), 
@@ -161,7 +187,7 @@ def load_trajectory(config: Optional[Config],
     traj = np.zeros((frame_range[1] - frame_range[0], config.n_beads, 3))
     idx_traj = 0
     
-    fname_traj = get_path(config, filetype="trajectory")
+    
     with open(fname_traj, "r") as f:
         
         for idx_frame in range(n_frames):
@@ -189,6 +215,37 @@ def load_trajectory(config: Optional[Config],
             
     return traj
 
+def save_trajectory(config: Optional[Config],
+                    trajectory: np.ndarray,
+                    fname: str = None,
+                    type: str = "gro",
+                    overwrite: bool = False):
+    
+    if isinstance(config, str):
+        config = Config.from_toml(config)
+    if fname is None:
+        fname = get_path(config, filetype="trajectory", overwrite=overwrite)
+    if type == "gro":
+        n_atoms = config.n_beads
+        for i, frame in enumerate(trajectory):
+            _write_frame_gro(n_atoms, frame, i, fname)
+
+    
+def _write_frame_gro(n_atoms, coordinates, time, fname, comment="", box=None, precision=3):
+    f = open(fname, "a")
+    comment += ', t= %s' % time
+    varwidth = precision + 5
+    fmt = '%%5d%%-5s%%5s%%5d%%%d.%df%%%d.%df%%%d.%df' % (
+            varwidth, precision, varwidth, precision, varwidth, precision)
+    lines = [comment, ' %d' % n_atoms]
+    for i in range(n_atoms):
+        lines.append(fmt % (i+1, "HET", "CA", i+1,
+                            coordinates[i, 0], coordinates[i, 1], coordinates[i, 2]))
+    lines.append('%10.5f%10.5f%10.5f%10.5f%10.5f%10.5f%10.5f%10.5f%10.5f' % (0,0,0,0,0,0,0,0,0))
+    f.write('\n'.join(lines))
+    f.write('\n')
+    f.close()
+    
 def get_distances(config: Optional[Config],
                   frame = None,
                   range: tuple = None):

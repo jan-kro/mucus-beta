@@ -17,6 +17,7 @@ class Config(BaseModel, arbitrary_types_allowed=True):
     stride:             int
     n_beads:            int
     timestep:           float
+    r0_nm:              float                   = 0.68 # bead-bead distance in nm
     cutoff_LJ:          float                   = 2.0
     lB_debye:           float                   = 36.737 # 3.077
     c_S:                float                   = 10.0
@@ -25,6 +26,8 @@ class Config(BaseModel, arbitrary_types_allowed=True):
     pbc:                bool                    = True
     cutoff_pbc:         Optional[float]         = None
     write_traj:         bool                    = True
+    write_forces:       bool                    = True
+    write_distances:    bool                    = True
     cwd:                Optional[str]           = os.getcwd()
     name_sys:           Optional[str]           = None
     dir_sys:            Optional[str]           = None

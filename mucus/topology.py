@@ -19,10 +19,48 @@ class Topology:
         self.bonds              = np.array(params["bonds"])
         self.tags               = np.array(params["tags"])
         
+        if "r0_bonds" not in params.keys():
+            self.r0_bond        = 2*np.ones_like(self.force_constant_nn)
+        else:
+            self.r0_bond        = np.array(params["r0_bonds"])
+        
         self.nbeads             = len(self.positions)
         self.ntags              = len(set(self.tags))
         
         self._validate_input()
+    
+    def set_parameter(self, value, type="epsilon_LJ"):
+        
+        if type == "epsilon_LJ":
+            assert value.shape == self.epsilon_lj.shape, "Shape of new parameter does not match"
+            self.epsilon_lj = value
+        elif type == "sigma_LJ":
+            assert value.shape == self.sigma_lj.shape, "Shape of new parameter does not match"
+            self.sigma_lj = value
+        elif type == "force_constants":
+            assert value.shape == self.force_constant_nn.shape, "Shape of new parameter does not match"
+            self.force_constant_nn = value
+        elif type == "r0_bonds":
+            assert value.shape == self.r0_bond.shape, "Shape of new parameter does not match"
+            self.r0_bond = value
+        elif type == "bonds":
+            assert value.shape == self.bonds.shape, "Shape of new parameter does not match"
+            self.bonds = value
+        elif type == "tags":
+            assert value.shape == self.tags.shape, "Shape of new parameter does not match"
+            self.tags = value
+        elif type == "rbeads":
+            assert value.shape == self.r_bead.shape, "Shape of new parameter does not match"
+            self.r_bead = value
+        elif type == "qbeads":
+            assert value.shape == self.q_bead.shape, "Shape of new parameter does not match"
+            self.q_bead = value
+        elif type == "mobilities":
+            assert value.shape == self.mobility.shape, "Shape of new parameter does not match"
+            self.mobility = value
+        else:
+            raise ValueError("Unknown parameter type")
+        
         
     def get_tags(self, i, j):
         """
@@ -55,9 +93,10 @@ class Topology:
         assert len(self.q_bead)   == self.nbeads, "Dimensions of qbead and positions do not match"
         assert len(self.mobility) == self.nbeads, "Dimensions of mobility and positions do not match"
         assert len(self.tags)     == self.nbeads, "Dimensions of tags and positions do not match"
-
+        
         assert self.force_constant_nn.shape == (self.ntags, self.ntags), "Number of tags and number of bond types do not match"
+        assert self.r0_bond.shape           == (self.ntags, self.ntags), "Number of tags and number of bond types do not match"
         assert self.epsilon_lj.shape        == (self.ntags, self.ntags), "Number of tags and number of bond types do not match"
         assert self.sigma_lj.shape          == (self.ntags, self.ntags), "Number of tags and number of bond types do not match"
-                    
+        
         return

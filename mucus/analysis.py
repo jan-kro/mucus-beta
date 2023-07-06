@@ -76,6 +76,21 @@ class Analysis:
             g_r += g_r_frame
         r = 0.5 * (edges[1:] + edges[:-1])
 
+        # ALLEN TILDERSLEY METHOD:
+        
+        # g_r[i] is average number of atoms which lie to a distance between r[i] and r[i]+dr to each other
+        g_r = g_r/natoms/len(self.trajectory)
+        
+        # number density of particles
+        number_density = natoms/self.cfg.lbox**3 # NOTE only for cubical box
+        
+        # now normalize by shell volume
+        shell_volumes = (4 / 3) * np.pi * (np.power(edges[1:], 3) - np.power(edges[:-1], 3))
+        
+        # normalisation
+        g_r = g_r / shell_volumes / number_density
+        
+        # MDTRAJ METHOD:
         # Normalize by volume of the spherical shell.
         # See discussion https://github.com/mdtraj/mdtraj/pull/724. There might be
         # a less biased way to accomplish this. The conclusion was that this could
@@ -83,13 +98,13 @@ class Analysis:
         # of doing the calculations matches the implementation in other packages like
         # AmberTools' cpptraj and gromacs g_rdf.
         
-        # unitcell_volumes = np.array(list(map(np.linalg.det, uc_vectors))) # this should be used if the unitcell is not cubic
-        unitcell_volumes = np.prod(uc_vectors, axis=1)
-        V = (4 / 3) * np.pi * (np.power(edges[1:], 3) - np.power(edges[:-1], 3))
-        norm = len(pairs) * np.sum(1.0 / unitcell_volumes) * V # the trajectory length is implicitly included in the uc volumes
-        g_r = g_r.astype(np.float64) / norm
+        # # unitcell_volumes = np.array(list(map(np.linalg.det, uc_vectors))) # this should be used if the unitcell is not cubic
+        # unitcell_volumes = np.prod(uc_vectors, axis=1)
+        # V = (4 / 3) * np.pi * (np.power(edges[1:], 3) - np.power(edges[:-1], 3))
+        # norm = len(pairs) * np.sum(1.0 / unitcell_volumes) * V # the trajectory length is implicitly included in the uc volumes
+        # g_r = g_r.astype(np.float64) / norm
         
-        number_density = len(pairs) * np.sum(1.0 / unitcell_volumes) / natoms / len(self.trajectory)
+        # number_density = len(pairs) * np.sum(1.0 / unitcell_volumes) / natoms / len(self.trajectory)
         
         if save == True:
             fname = get_path(self.cfg, filetype="rdf", overwrite=overwrite)
@@ -161,3 +176,7 @@ class Analysis:
             np.save(fname, np.array([Q, S_q]))
 
         return Q, S_q
+    
+    def stress_tensor(self):
+        """TO DO"""
+        return

@@ -5,6 +5,7 @@ import toml
 from .config import Config
 from .topology import Topology
 from pathlib import Path
+from tqdm import tqdm
 
 from time import time
 from copy import deepcopy
@@ -34,18 +35,14 @@ class System:
         
         self.overwrite_switch       = False
         self.version                = ""
+        self.steps_total            = 0
         
         self.setup()
     
     # TODO: redo the bond list so that every bond pair only exists once
     
-    # TODO make subclasses that 
-    #   - handle all the analysis calculations
-    #   - handle all the data organisations 
-    
     # TODO ceneter box around 0
     
-    # TODO add reporters that get written every stride steps
     
     def setup(self):
         
@@ -55,7 +52,7 @@ class System:
         self.lB_debye        = self.config.lB_debye # units of beed radii                                       
         
         # TODO implement this properly
-        self.r0_beeds_nm     = 0.1905 # nm calculated radius for one PEG Monomer
+        self.r0_beeds_nm     = self.config.r0_nm # 0.1905 # nm calculated radius for one PEG Monomer
         self.B_debye         = np.sqrt(self.config.c_S)*self.r0_beeds_nm/10 # from the relationship in the Hansing thesis [c_S] = mM
         self.n_frames        = int(np.ceil(self.config.steps/self.config.stride))
  
@@ -132,6 +129,12 @@ class System:
                                 (-self.box_length,  self.box_length, -self.box_length),
                                 (self.box_length,  -self.box_length, -self.box_length),
                                 (-self.box_length, -self.box_length, -self.box_length)))
+        return
+    
+    def set_timestep(self, timestep):
+        
+        self.timestep = timestep
+        
         return
     
     def set_positions(self, pos):
@@ -265,9 +268,10 @@ class System:
         distances = self.distances[self.L_nn].reshape(-1,1)
         directions = self.directions[self.L_nn]
         force_constants = self.topology.force_constant_nn[self.topology.get_tags(idxs[:,0], idxs[:,1])].reshape(-1,1)
+        r0 = self.topology.r0_bond[self.topology.get_tags(idxs[:,0], idxs[:,1])].reshape(-1,1)
         
         # calculate the force of every bond at once
-        forces_temp = force_constants*(2-4/distances)*directions # NOTE r0 is hardcoded with r0=2
+        forces_temp = 2*force_constants*(1-r0/distances)*directions 
 
         for i, force in zip(idxs[:, 0], forces_temp):
             self.forces[i, :] += force
@@ -340,7 +344,7 @@ class System:
         # since the std of the foce should be sqrt(6*mu) but the std of the absolute randn vector is sqrt(3)
         # the std used here is sqrt(2*mu)
         
-        return np.sqrt(2*self.config.timestep*self.topology.mobility)*np.random.randn(self.n_beads, 3)    
+        return np.sqrt(2*self.timestep*self.topology.mobility)*np.random.randn(self.n_beads, 3)    
     
     def create_fname(self, 
                      filetype: str = "trajectory", 
@@ -357,6 +361,7 @@ class System:
             "parameters"
             "rdf"
             "structure_factor"
+            "forces"
         """
         
         # if the system should not be overwritten change the version
@@ -365,7 +370,8 @@ class System:
                     "parameters":       ("/parameters/param_",                  ".toml"),
                     "init_pos":         ("/initial_positions/xyz_",             ".npy"),
                     "rdf":              ("/results/rdf/rdf_",                   ".npy"),
-                    "structure_factor": ("/results/structure_factor/Sq_",       ".npy")}
+                    "structure_factor": ("/results/structure_factor/Sq_",       ".npy"),
+                    "forces":           ("/forces/forces_",                     ".txt")}
         
         if overwrite == False:
             if self.overwrite_switch == False:
@@ -438,9 +444,7 @@ class System:
         
         return fname
     
-    def write_frame_gro(self, n_atoms, coordinates, time, fname, comment="", box=None, precision=3):
-
-        f = open(fname, "a")
+    def write_frame_gro(self, n_atoms, coordinates, time, file, comment="", box=None, precision=3):
 
         comment += ', t= %s' % time
 
@@ -465,11 +469,15 @@ class System:
 
         lines.append('%10.5f%10.5f%10.5f%10.5f%10.5f%10.5f%10.5f%10.5f%10.5f' % (0,0,0,0,0,0,0,0,0))
         
-        f.write('\n'.join(lines))
-        f.write('\n')
-        f.close()
+        file.write('\n'.join(lines))
+        file.write('\n')
         
-    def save_config(self, overwrite=False):
+    def write_frame_force(self, frame, file, frame_number):
+        file.write(f"Frame {frame_number}\n")
+        for line in frame:
+            file.write(f"{line[0]:.9f} {line[1]:.9f} {line[2]:.9f}\n")
+        
+    def save_config(self, overwrite=False, print_fname=False):
         """
         saves current self.config in a .toml file 
         """
@@ -495,6 +503,9 @@ class System:
         # only in case the save_config method (or any other using self.config.name_sys) is called again
         if overwrite == False:
             self.config.name_sys = self.config.name_sys[:-len(self.version)]
+            
+        if print_fname == True:
+            print(fname_sys)
         
         return
     
@@ -509,7 +520,7 @@ class System:
         
         return
     
-    def simulate(self, steps=None, save_sys=True, overwrite_sys=False, report_time=True, report_stride=1000):
+    def simulate(self, steps=None, save_sys=True, overwrite_sys=False, report_time=True, report_stride=1000, max_dist=None):
         """
         Simulates the brownian motion of the system with the defined forcefield using forward Euler.
         """
@@ -520,15 +531,29 @@ class System:
         
         if steps == None:
             steps = self.config.steps
+            
+        if max_dist == None:
+            max_dist = self.config.cutoff_pbc
         
         t_start = time()
         
         idx_traj = 1 # because traj[0] is already the initial position
         
-        fname_traj = self.create_fname(filetype="trajectory", overwrite=overwrite_sys)
-        self.write_frame_gro(self.n_beads, self.positions, 0.0, fname_traj, comment=f"traj step 0") # write frame 0 with initial positions
+        # save initial pos
+        if self.config.write_traj==True:
+            fname_traj = self.create_fname(filetype="trajectory", overwrite=overwrite_sys)
+            f_traj = open(fname_traj, "a")
+            self.write_frame_gro(self.n_beads, self.positions, self.timestep*self.steps_total, f_traj, comment=f"traj step 0") # write frame 0 with initial positions
+            
+        if self.config.write_forces==True:
+            fname_force = self.create_fname(filetype="forces", overwrite=overwrite_sys)
+            f_force = open(fname_force, "a")
+            self.get_distances_directions()
+            self.get_forces()
+            self.write_frame_force(self.forces, f_force, 0)
         
-        for step in range(1, steps):
+        print(f"\nStarting simulation with {steps} steps.")
+        for step in tqdm(range(1, steps)):
             
             # get distances for interactions
             self.get_distances_directions()
@@ -537,7 +562,7 @@ class System:
             self.get_forces()
             
             # integrate
-            self.positions = self.positions + self.config.timestep*self.topology.mobility*self.forces + self.force_Random()
+            self.positions = self.positions + self.timestep*self.topology.mobility*self.forces + self.force_Random()
             
             # apply periodic boundary conditions
             self.apply_pbc()
@@ -546,17 +571,25 @@ class System:
             if (self.config.write_traj==True) and (step%self.config.stride==0):
                     
                 # TODO add condition for direct writing
-                self.write_frame_gro(self.n_beads, self.positions, float(idx_traj), fname_traj, comment=f"traj step {step:d}")
+                self.write_frame_gro(self.n_beads, self.positions, self.timestep*self.steps_total, f_traj, comment=f"traj step {step:d}")
                 idx_traj += 1
                 
+                d = self.positions[self.topology.bonds[:, 0]] - self.positions[self.topology.bonds[:, 1]]
+                d -= np.round(d/self.box_length)*self.box_length
+                
                 # check if sys exploded
-                if np.any(self.distances[self.L_nn] > self.config.cutoff_pbc):
+                if np.any(np.linalg.norm(d, axis=1) > max_dist):
                     print("System exploded")
                     print("simulation Step", step)
                     break
+                
+                if self.config.write_forces==True:
+                    self.write_frame_force(self.forces, f_force, step)
             
-            if (report_time==True) and (step%report_stride==0):
-                print(f"Step {step:12d} of {steps:12d} | {int((time()-t_start)//60):6d} min {int((time()-t_start)%60):2d} s")
+            #if (report_time==True) and (step%report_stride==0):
+            #    print(f"Step {step:12d} of {steps:12d} | {int((time()-t_start)//60):6d} min {int((time()-t_start)%60):2d} s")
+            
+            self.steps_total += 1
             
             # if np.any(self.distances[self.L_nn] > 5):
             #     print("System exploded")
@@ -567,7 +600,15 @@ class System:
         
         self.config.simulation_time = t_end - t_start
         
+        if self.config.write_forces==True:
+            f_force.close()
+            
+        if self.config.write_traj==True:
+            f_traj.close()
+            
+        
         if save_sys == True:
-            self.save_config(overwrite=overwrite_sys)
+            print("\nSaved system to")
+            self.save_config(overwrite=overwrite_sys, print_fname=True)
 
         return

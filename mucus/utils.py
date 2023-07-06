@@ -4,9 +4,10 @@ import numpy as np
 from typing import Optional
 from mucus.config import Config
 from pathlib import Path
+from io import StringIO
 
 
-def get_path(Config: Config, 
+def get_path(Config: Optional[Config], 
              filetype: str = "trajectory",
              overwrite: bool = True):
     """
@@ -21,17 +22,22 @@ def get_path(Config: Config,
         "parameters"
         "rdf"
         "structure_factor"
+        "forces"
     """
     
-    # if the system should not be overwritten change the version
+    
     dir_dict = {"trajectory":       ("/trajectories/traj_",                 ".gro"),
                 "config":           ("/configs/cfg_",                       ".toml"),
                 "parameters":       ("/parameters/param_",                  ".toml"),
                 "init_pos":         ("/initial_positions/xyz_",             ".npy"),
                 "rdf":              ("/results/rdf/rdf_",                   ".npy"),
-                "structure_factor": ("/results/structure_factor/Sq_",       ".npy")}
+                "structure_factor": ("/results/structure_factor/Sq_",       ".npy"),
+                "forces":           ("/forces/forces_",                     ".txt")}
     
-    fname = Config.dir_sys + dir_dict[filetype][0] + Config.name_sys + dir_dict[filetype][1]
+    if isinstance(Config, str):
+        fname = fname.split("/configs/cfg_")[0] + dir_dict[filetype][0] + fname.split("/configs/cfg_")[1].split(".")[0] + dir_dict[filetype][1]
+    else:
+        fname = Config.dir_sys + dir_dict[filetype][0] + Config.name_sys + dir_dict[filetype][1]
     
     # split fname into base, name, version and ext
     head_tail = os.path.split(fname)
@@ -39,6 +45,7 @@ def get_path(Config: Config,
     name_tot, ext = os.path.splitext(head_tail[1])
     split_arg = "_v"
 
+    # if the system should not be overwritten change the version
     name_version = name_tot.split(split_arg)
     if len(name_version) == 1:
         name = name_version[0]
@@ -64,10 +71,18 @@ def get_path(Config: Config,
     if version > 0:
         fname = base + "/" + name + split_arg + str(version) + ext
     
-    # do not change version for init pos and parameters
-    if filetype == "init_pos" or filetype == "parameters":
-        fname = base + "/" + name + ext
-    
+    # do not change version for init pos and parameters (DEPRECATED)
+    # the following should deal with backwards compatability (not fully fixable)
+    # in the case of overwrite it will get the old file if the current version doesnt exist
+    # NOTE THIS IS STUPID AND RUNS INTO PROBLEMS SO THERE IS NO BACKWARDS COMPATABILITY FUCK IT
+    # if (filetype == "init_pos" or filetype == "parameters") and (overwrite == True):
+    #     if not os.path.exists(fname):
+    #         fname = base + "/" + name + ext
+
+    # if parent path doesnt exist, create it
+    if not os.path.exists(Path(fname).parent):
+        os.makedirs(Path(fname).parent)
+            
     return fname
     
 def get_version(config: Config):
@@ -148,26 +163,23 @@ def get_rdf(config: Optional[Config],
             if tags[i] == tag1 and tags[j] == tag2:
                 pairs.append((i, j))
 
-def load_trajectory(config: Optional[Config],
-                    frame_range: list = None):
+def load_forces(config: Optional[Config],
+                frame_range: list = None):
     """
-    Loads Trajectory into numpy array forthe given range of frames.
-    If frame_range is None, the whole trajectory is loaded.
+    Loads Forces into numpy array for the given range of frames.
+    If frame_range is None, all frames are loaded.
     """
     # TODO implement stride
-    from io import StringIO
     
     # if config is given as a path, load it
     if isinstance(config, str):
         config = Config.from_toml(config)
     
     # get traj path
-    fname_traj = get_path(config, filetype="trajectory")
+    fname_traj = get_path(config, filetype="forces")
     
     # get number of frames
-    with open(fname_traj) as f:
-        n_lines = sum(1 for _ in f)
-    n_frames = int(n_lines / (config.n_beads + 3))
+    n_frames = get_number_of_frames(config)
     
     # handle frame range input
     if frame_range is None:
@@ -178,16 +190,89 @@ def load_trajectory(config: Optional[Config],
         frame_range[1] = n_frames
     if frame_range[0] < 0 or frame_range[1] > n_frames:
         raise ValueError("frame range out of bounds")
+
+    # initialize forces array
+    forces = np.zeros((frame_range[1] - frame_range[0], config.n_beads, 3))
+    idx_traj = 0
+    
+    print(forces.shape)
+    print(config.n_beads)
+    
+    with open(fname_traj, "r") as f:
+        
+        for idx_frame in range(n_frames):
+            if idx_frame == frame_range[1]:
+                break
+            if frame_range[0] <= idx_frame < frame_range[1]: 
+                # skip header
+                f.readline()
+                # save data into string
+                data_str = ""
+                for i in range(config.n_beads):
+                    data_str += f.readline()        
+                # read in data
+                frame = np.genfromtxt(StringIO(data_str), delimiter=" ")
+                print(frame.shape)
+                print(idx_frame)
+                forces[idx_traj] = np.array(frame.tolist())
+                idx_traj += 1
+            else:
+                # skip frame
+                for i in range(config.n_beads + 1):
+                    f.readline()
+    f.close()
+            
+    return forces
+
+def load_trajectory(config: Optional[Config],
+                    frame_range: list = None,
+                    frame: int = None):
+    """
+    Loads Trajectory into numpy array forthe given range of frames.
+    If frame_range is None, the whole trajectory is loaded.
+    """
+    # TODO implement stride
+    
+    # if config is given as a path, load it
+    if isinstance(config, str):
+        config = Config.from_toml(config)
+    
+    # get traj path
+    fname_traj = get_path(config, filetype="trajectory")
+    
+    # get number of frames
+    n_frames = get_number_of_frames(config)
+    
+    if frame is not None:
+        frame_range = list([frame, frame+1])
+    
+    # handle frame range input
+    if frame_range is None:
+        frame_range = list([0, n_frames])
+    if frame_range[0] == None:
+        frame_range[0] = 0
+    if frame_range[1] == None:
+        frame_range[1] = n_frames
+    if frame_range[1] > n_frames:
+        frame_range[1] = n_frames
+    if frame_range[0] < 0:
+        frame_range[0] = n_frames + frame_range[0]
+    if frame_range[1] < 0:
+        frame_range[1] = n_frames + frame_range[1]
+    # if frame_range[0] > frame_range[1]:
+    #     raise ValueError("Frame range is not valid")
     
     #define a np.dtype for gro array/dataset (hard-coded for now)
     gro_dt = np.dtype([('col1', 'S4'), ('col2', 'S4'), ('col3', int), 
                     ('col4', float), ('col5', float), ('col6', float)])
 
     # initialize trajectory array
-    traj = np.zeros((frame_range[1] - frame_range[0], config.n_beads, 3))
+    if (frame_range[1] - frame_range[0]) < 0:
+        traj = np.zeros((n_frames - frame_range[0] + frame_range[1], config.n_beads, 3))
+    else:
+        traj = np.zeros((frame_range[1] - frame_range[0], config.n_beads, 3))
+    
     idx_traj = 0
-    
-    
     with open(fname_traj, "r") as f:
         
         for idx_frame in range(n_frames):
@@ -220,18 +305,56 @@ def save_trajectory(config: Optional[Config],
                     fname: str = None,
                     type: str = "gro",
                     overwrite: bool = False):
-    
     if isinstance(config, str):
         config = Config.from_toml(config)
+    if len(trajectory.shape) != 3:
+        raise ValueError("trajectory must be a 3d array")
     if fname is None:
         fname = get_path(config, filetype="trajectory", overwrite=overwrite)
     if type == "gro":
-        n_atoms = config.n_beads
+        n_atoms = len(trajectory[0])
         for i, frame in enumerate(trajectory):
             _write_frame_gro(n_atoms, frame, i, fname)
+            
+def cut_trajectory(config: Optional[Config],
+                   frame_range: list = None,
+                   bead_indices: list = None,
+                   fname: str = None,
+                   type: str = "gro"):
+    """
+    saves traejctory as a new gro file with the given frame range.
+    """
+    
+    if isinstance(config, str):
+        config = Config.from_toml(config)
+    
+    fname_traj = get_path(config, filetype="trajectory", overwrite=True)
+    
+    # get number of frames
+    n_frames = get_number_of_frames(config)
+    
+    if frame_range is None:
+        frame_range = (0, n_frames)
+    if frame_range[0] == None:
+        frame_range[0] = 0
+    if frame_range[1] == None:
+        frame_range[1] = n_frames
+    if frame_range[0] < 0 or frame_range[1] > n_frames:
+        raise ValueError("frame range out of bounds")
+
+    traj = load_trajectory(config, frame_range=frame_range)
+    
+    if bead_indices is not None:
+        traj = traj[:, bead_indices, :]
+        
+    if fname is None:
+        fname = Path(fname_traj).parent / f"traj_{config.name_sys}_frame_{frame_range[0]}_to_{frame_range[1]}_nbeads_{len(bead_indices)}.gro"
+    
+    if type == "gro":
+        save_trajectory(config, traj, fname=fname)
 
     
-def _write_frame_gro(n_atoms, coordinates, time, fname, comment="", box=None, precision=3):
+def _write_frame_gro(n_atoms, coordinates, time, fname, comment="trajectory", box=None, precision=3):
     f = open(fname, "a")
     comment += ', t= %s' % time
     varwidth = precision + 5
@@ -245,6 +368,10 @@ def _write_frame_gro(n_atoms, coordinates, time, fname, comment="", box=None, pr
     f.write('\n'.join(lines))
     f.write('\n')
     f.close()
+
+def get_number_of_frames(config: Optional[Config]):
+    return int(config.steps/config.stride)
+
     
 def get_distances(config: Optional[Config],
                   frame = None,
@@ -265,6 +392,7 @@ def get_distances(config: Optional[Config],
 
     directions = r_left - r_right # this is right considering the mesh method. dir[i, j] = r_j - r_i
 
+    # TODO DOES THIS MAKE SENSE ???????????
     # apply minimum image convetion
     directions -= config.lbox*np.round(directions/config.lbox)
 

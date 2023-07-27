@@ -1,0 +1,27 @@
+lines.linewidth: 0.8 #0.625
+lines.markersize : 3
+
+mathtext.fontset: stix
+
+font.family:  STIXGeneral
+font.style:   normal
+font.variant: normal
+font.weight:  normal
+font.stretch: normal
+font.size: 7.5
+
+axes.titlesize : 0
+axes.labelsize : 8
+xtick.labelsize: 7
+ytick.labelsize: 7
+legend.fontsize: 8
+
+text.usetex: true
+
+figure.figsize: 3.6,2.225  # figure size in inches
+figure.dpi : 300
+
+image.aspect: auto
+
+savefig.dpi: figure
+savefig.format: png

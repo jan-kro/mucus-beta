@@ -1,8 +1,9 @@
 import os
 import toml
 import numpy as np
+from .config import Config
+from .system import System
 from typing import Optional
-from mucus.config import Config
 from pathlib import Path
 from io import StringIO
 
@@ -35,7 +36,7 @@ def get_path(Config: Optional[Config],
                 "forces":           ("/forces/forces_",                     ".txt")}
     
     if isinstance(Config, str):
-        fname = fname.split("/configs/cfg_")[0] + dir_dict[filetype][0] + fname.split("/configs/cfg_")[1].split(".")[0] + dir_dict[filetype][1]
+        fname = Config.split("/configs/cfg_")[0] + dir_dict[filetype][0] + Config.split("/configs/cfg_")[1].split(".")[0] + dir_dict[filetype][1]
     else:
         fname = Config.dir_sys + dir_dict[filetype][0] + Config.name_sys + dir_dict[filetype][1]
     
@@ -47,6 +48,8 @@ def get_path(Config: Optional[Config],
 
     # if the system should not be overwritten change the version
     name_version = name_tot.split(split_arg)
+    
+    # check if there is a version contained in the name
     if len(name_version) == 1:
         name = name_version[0]
         version = 0
@@ -58,15 +61,18 @@ def get_path(Config: Optional[Config],
             # reassemble name in case there is a second "_v" in the name
             for part in name_version[1:-1]:
                 name += split_arg + part
+        # if split_arg is in the name but not followed by an integer, use total name as name
         except:
             # use total name as name
             name = name_tot
             version = 0
 
     if overwrite == False:
-        version += 1
-        while os.path.exists(base + "/" + name + split_arg + str(version) + ext):
-            version += 1
+        if not os.path.exists(base + "/" + name + ext):
+            fname = base + "/" + name + ext
+        else:
+            while os.path.exists(base + "/" + name + split_arg + str(version) + ext):
+                version += 1
 
     if version > 0:
         fname = base + "/" + name + split_arg + str(version) + ext
@@ -178,6 +184,25 @@ def load_forces(config: Optional[Config],
     # get traj path
     fname_traj = get_path(config, filetype="forces")
     
+    if not os.path.exists(fname_traj):
+        print(f"forces file {fname_traj} not found")
+        print(f"Creating forces file from {config.name_sys}.gro ...")
+        
+        # create sys and load trajectory
+        traj = load_trajectory(config)
+        sys = System(config)
+        
+        f_force = open(fname_traj, "a")
+        
+        for i, frame in enumerate(traj):
+            sys.set_positions(frame)
+            sys.get_distances_directions()
+            sys.get_forces()
+            sys.write_frame_force(frame, f_force, i)
+
+        f_force.close()
+        
+    
     # get number of frames
     n_frames = get_number_of_frames(config)
     
@@ -195,9 +220,6 @@ def load_forces(config: Optional[Config],
     forces = np.zeros((frame_range[1] - frame_range[0], config.n_beads, 3))
     idx_traj = 0
     
-    print(forces.shape)
-    print(config.n_beads)
-    
     with open(fname_traj, "r") as f:
         
         for idx_frame in range(n_frames):
@@ -212,8 +234,6 @@ def load_forces(config: Optional[Config],
                     data_str += f.readline()        
                 # read in data
                 frame = np.genfromtxt(StringIO(data_str), delimiter=" ")
-                print(frame.shape)
-                print(idx_frame)
                 forces[idx_traj] = np.array(frame.tolist())
                 idx_traj += 1
             else:
@@ -288,6 +308,12 @@ def load_trajectory(config: Optional[Config],
                     data_str += f.readline()        
                 # skip box size
                 f.readline()
+                
+                # check if data string is empty -> end of file
+                if data_str == "":
+                    print(f"Warning: Trajectory unexpectedly ended at frame {idx_frame}.")
+                    break
+                
                 # read in data
                 frame = np.genfromtxt(StringIO(data_str), dtype=gro_dt, usecols=(3, 4, 5))
                 traj[idx_traj] = np.array(frame.tolist())

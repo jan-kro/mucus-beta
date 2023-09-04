@@ -6,6 +6,7 @@ from .system import System
 from typing import Optional
 from pathlib import Path
 from io import StringIO
+from tqdm import tqdm
 
 
 def get_path(Config: Optional[Config], 
@@ -27,13 +28,15 @@ def get_path(Config: Optional[Config],
     """
     
     
-    dir_dict = {"trajectory":       ("/trajectories/traj_",                 ".gro"),
-                "config":           ("/configs/cfg_",                       ".toml"),
-                "parameters":       ("/parameters/param_",                  ".toml"),
-                "init_pos":         ("/initial_positions/xyz_",             ".npy"),
-                "rdf":              ("/results/rdf/rdf_",                   ".npy"),
-                "structure_factor": ("/results/structure_factor/Sq_",       ".npy"),
-                "forces":           ("/forces/forces_",                     ".txt")}
+    dir_dict = {"trajectory":           ("/trajectories/traj_",                 ".gro"),
+                "config":               ("/configs/cfg_",                       ".toml"),
+                "parameters":           ("/parameters/param_",                  ".toml"),
+                "init_pos":             ("/initial_positions/xyz_",             ".npy"),
+                "rdf":                  ("/results/rdf/rdf_",                   ".npy"),
+                "structure_factor":     ("/results/structure_factor/Sq_",       ".npy"),
+                "structure_factor_rdf": ("/results/structure_factor/Sq_rdf_",       ".npy"),
+                "stress_tensor":        ("/results/stress_tensor/sigma_",       ".npy"),
+                "forces":               ("/forces/forces_",                     ".txt")}
     
     if isinstance(Config, str):
         fname = Config.split("/configs/cfg_")[0] + dir_dict[filetype][0] + Config.split("/configs/cfg_")[1].split(".")[0] + dir_dict[filetype][1]
@@ -51,6 +54,7 @@ def get_path(Config: Optional[Config],
     
     # check if there is a version contained in the name
     if len(name_version) == 1:
+        # system name does not contain split arg "_v"
         name = name_version[0]
         version = 0
     else:
@@ -68,14 +72,15 @@ def get_path(Config: Optional[Config],
             version = 0
 
     if overwrite == False:
+        # check if file already exists
         if not os.path.exists(base + "/" + name + ext):
             fname = base + "/" + name + ext
         else:
+            # if file exist update version until no vile with that version exists
             while os.path.exists(base + "/" + name + split_arg + str(version) + ext):
                 version += 1
-
-    if version > 0:
-        fname = base + "/" + name + split_arg + str(version) + ext
+            # update fname with new version
+            fname = base + "/" + name + split_arg + str(version) + ext
     
     # do not change version for init pos and parameters (DEPRECATED)
     # the following should deal with backwards compatability (not fully fixable)
@@ -170,12 +175,12 @@ def get_rdf(config: Optional[Config],
                 pairs.append((i, j))
 
 def load_forces(config: Optional[Config],
-                frame_range: list = None):
+                frame_range: list = None,
+                stride: int = 1):
     """
     Loads Forces into numpy array for the given range of frames.
     If frame_range is None, all frames are loaded.
     """
-    # TODO implement stride
     
     # if config is given as a path, load it
     if isinstance(config, str):
@@ -194,14 +199,14 @@ def load_forces(config: Optional[Config],
         
         f_force = open(fname_traj, "a")
         
-        for i, frame in enumerate(traj):
+        for i, frame in tqdm(enumerate(traj)):
             sys.set_positions(frame)
             sys.get_distances_directions()
             sys.get_forces()
-            sys.write_frame_force(frame, f_force, i)
+            sys.write_frame_force(sys.forces, f_force, i)
 
         f_force.close()
-        
+        print("Done.")
     
     # get number of frames
     n_frames = get_number_of_frames(config)
@@ -217,7 +222,7 @@ def load_forces(config: Optional[Config],
         raise ValueError("frame range out of bounds")
 
     # initialize forces array
-    forces = np.zeros((frame_range[1] - frame_range[0], config.n_beads, 3))
+    forces = np.zeros(((frame_range[1] - frame_range[0] - 1)//stride + 1, config.n_beads, 3))
     idx_traj = 0
     
     with open(fname_traj, "r") as f:
@@ -225,7 +230,7 @@ def load_forces(config: Optional[Config],
         for idx_frame in range(n_frames):
             if idx_frame == frame_range[1]:
                 break
-            if frame_range[0] <= idx_frame < frame_range[1]: 
+            if (frame_range[0] <= idx_frame) and ((idx_frame - frame_range[0])%stride == 0): 
                 # skip header
                 f.readline()
                 # save data into string
@@ -246,12 +251,12 @@ def load_forces(config: Optional[Config],
 
 def load_trajectory(config: Optional[Config],
                     frame_range: list = None,
-                    frame: int = None):
+                    frame: int = None,
+                    stride: int = 1):
     """
     Loads Trajectory into numpy array forthe given range of frames.
     If frame_range is None, the whole trajectory is loaded.
     """
-    # TODO implement stride
     
     # if config is given as a path, load it
     if isinstance(config, str):
@@ -275,22 +280,24 @@ def load_trajectory(config: Optional[Config],
         frame_range[1] = n_frames
     if frame_range[1] > n_frames:
         frame_range[1] = n_frames
+        print(f"Warning: Frame range exceeds trajectory length. Setting frame_range[1] to {n_frames}")
+    if frame_range[0] < -n_frames:
+        raise ValueError(f"Frame range is not valid: index 0 exceeds trajectory length of {n_frames} frames")
     if frame_range[0] < 0:
         frame_range[0] = n_frames + frame_range[0]
+    if frame_range[1] <= -n_frames:
+        raise ValueError(f"Frame range is not valid: index 1 exceeds trajectory length of {n_frames} frames")
     if frame_range[1] < 0:
         frame_range[1] = n_frames + frame_range[1]
-    # if frame_range[0] > frame_range[1]:
-    #     raise ValueError("Frame range is not valid")
+    if frame_range[0] >= frame_range[1]:
+        raise ValueError("Frame range is not valid: index 0 is larger than index 1")
     
     #define a np.dtype for gro array/dataset (hard-coded for now)
     gro_dt = np.dtype([('col1', 'S4'), ('col2', 'S4'), ('col3', int), 
                     ('col4', float), ('col5', float), ('col6', float)])
 
     # initialize trajectory array
-    if (frame_range[1] - frame_range[0]) < 0:
-        traj = np.zeros((n_frames - frame_range[0] + frame_range[1], config.n_beads, 3))
-    else:
-        traj = np.zeros((frame_range[1] - frame_range[0], config.n_beads, 3))
+    traj = np.zeros(((frame_range[1] - frame_range[0] - 1)//stride + 1, config.n_beads, 3))
     
     idx_traj = 0
     with open(fname_traj, "r") as f:
@@ -298,7 +305,7 @@ def load_trajectory(config: Optional[Config],
         for idx_frame in range(n_frames):
             if idx_frame == frame_range[1]:
                 break
-            if frame_range[0] <= idx_frame < frame_range[1]: 
+            if (frame_range[0] <= idx_frame) and ((idx_frame - frame_range[0])%stride == 0): 
                 # skip header
                 for i in range(2):
                     f.readline()
@@ -311,7 +318,8 @@ def load_trajectory(config: Optional[Config],
                 
                 # check if data string is empty -> end of file
                 if data_str == "":
-                    print(f"Warning: Trajectory unexpectedly ended at frame {idx_frame}.")
+                    print(f"Warning: Trajectory of {config.name_sys} unexpectedly ended at frame {idx_frame}.")
+                    traj = traj[:idx_traj]
                     break
                 
                 # read in data
@@ -322,6 +330,20 @@ def load_trajectory(config: Optional[Config],
                 # skip frame
                 for i in range(config.n_beads + 3):
                     f.readline()
+    
+        # check if there are more frames in the file
+        if frame_range[1] == n_frames:
+            # skip frames that are not read beacause of stride
+            for i in range((frame_range[1]-frame_range[0])%stride):
+                for j in range(config.n_beads + 3):
+                    f.readline() # skip line
+            data_str = ""
+            for i in range(config.n_beads + 3):
+                data_str += f.readline()
+            if data_str != "":
+                print(f"Warning: Trajectory of {config.name_sys} unexpectedly continued after frame {frame_range[1]}.")
+                print(data_str)
+    
     f.close()
             
     return traj
@@ -430,8 +452,46 @@ def get_distances(config: Optional[Config],
     
     # only return distances, that lie within the interaction cutoff
     return distances[mask]     
+
+def delete_system(config: Optional[Config],
+                  only_results: bool = False):
+    """
+    Deletes every file of a scpecified system. Use with care.
+    """
     
+    dir_dict = {"trajectory":           ("/trajectories/traj_",                 ".gro"),
+                "config":               ("/configs/cfg_",                       ".toml"),
+                "parameters":           ("/parameters/param_",                  ".toml"),
+                "init_pos":             ("/initial_positions/xyz_",             ".npy"),
+                "rdf":                  ("/results/rdf/rdf_",                   ".npy"),
+                "structure_factor":     ("/results/structure_factor/Sq_",       ".npy"),
+                "structure_factor_rdf": ("/results/structure_factor/Sq_rdf_",       ".npy"),
+                "stress_tensor":        ("/results/stress_tensor/sigma_",       ".npy"),
+                "forces":               ("/forces/forces_",                     ".txt")}
     
+    if isinstance(config, str):
+        config = Config.from_toml(config)
+    if not only_results:    
+        proceed = "y" == input(f"Are you sure you want to delete system {config.name_sys} and all its related files? (y/n) ")
+        if proceed:
+            for key in dir_dict.keys():
+                fname = get_path(config, filetype=key)
+                if os.path.exists(fname):
+                    os.remove(fname)
+            print(f"System {config.name_sys} deleted.")
+    else:
+        proceed = "y" == input(f"Are you sure you want to delete all results of system {config.name_sys}? (y/n) ")
+        if proceed:
+            for key in ["rdf", "structure_factor", "structure_factor_rdf", "stress_tensor"]:
+                fname = get_path(config, filetype=key)
+                if os.path.exists(fname):
+                    os.remove(fname)
+            print(f"Results of system {config.name_sys} deleted.")
+def save_config():
+    # TODO
+    print("function does nothing (todo)")
+    return
+
     
 # def rdf(self,
 #             r_range = None,

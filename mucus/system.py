@@ -291,7 +291,8 @@ class System:
         epsilon = self.topology.epsilon_lj[self.topology.get_tags(idxs[:,0], idxs[:,1])].reshape(-1,1)
         sigma = self.topology.sigma_lj[self.topology.get_tags(idxs[:,0], idxs[:,1])].reshape(-1,1)
         
-        forces_temp = 4*epsilon*(-12*sigma**12/distances**14 + 6*sigma**7/distances**8)*directions
+        # the exponents are higher so the directions are normalized
+        forces_temp = 4*epsilon*(-12*sigma**12/distances**14 + 6*sigma**7/distances**8)*directions 
 
         for i, force in zip(idxs[:, 0], forces_temp):
             self.forces[i, :] += force
@@ -345,6 +346,9 @@ class System:
         # the std used here is sqrt(2*mu)
         
         return np.sqrt(2*self.timestep*self.topology.mobility)*np.random.randn(self.n_beads, 3)    
+    
+    
+    # TODO USE utils.get_fname INSTEAD
     
     def create_fname(self, 
                      filetype: str = "trajectory", 
@@ -579,6 +583,7 @@ class System:
                 
                 # check if sys exploded
                 if np.any(np.linalg.norm(d, axis=1) > max_dist):
+                    print(f"Distances between bonded atoms larger than maxdist = {max_dist}")
                     print("System exploded")
                     print("simulation Step", step)
                     break

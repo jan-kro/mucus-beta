@@ -17,7 +17,7 @@ class Config(BaseModel, arbitrary_types_allowed=True):
     stride:             int
     n_beads:            int
     timestep:           float
-    r0_nm:              float                   = 0.68 # bead-bead distance in nm
+    r0_nm:              float                   = 0.1905 # 0.68 # bead radius in nm
     cutoff_LJ:          float                   = 2.0
     lB_debye:           float                   = 36.737 # 3.077
     c_S:                float                   = 10.0
@@ -111,49 +111,24 @@ class Config(BaseModel, arbitrary_types_allowed=True):
             output = output.replace("=", " = ")
         return output
     
-    def save_config(self, fout: str = None):
+    def save_config(self, fout: str = None, overwrite: bool = True):
         """
         saves current self.config in a .toml file 
         """
         
+        #TODO add overwrite option
+        
         # check if different pathout is specified, than in config
         if fout is None:
-            fname_sys = self.fname_sys
-        else: 
-            fname_sys = fout
-        
-        if fname_sys is None:
-            fname_sys = os.path.join(self.cwd, f"configs/sys_{self.nbeads:d}beeds_{self.lbox:.2f}lbox_{self.mobilities:.5f}mu.toml")
-            k = 1
-            while os.path.exists(fname_sys):
-                fname_sys = os.path.join(self.cwd, f"configs/sys_{self.nbeads:d}beeds_{self.lbox:.2f}lbox_{self.mobilities:.5f}mu_v{k:d}.toml")
-                k += 1
-        else:
-            #check if path is given with or without filename
-            # if not the input will be interpreted as a directory
-            if fname_sys[-5:] != ".toml":
-                # take care of input ambiguity
-                if fname_sys[-1:] == "/":
-                    fname_sys = fname_sys[:-1]
-                
-                path_sys = fname_sys
-                
-                fname_sys = path_sys + f"/sys_{self.nbeads:d}beeds_{self.lbox:.2f}lbox_{self.mobilities:.5f}mu.toml"
-                # don't overwrite trajectories 
-                k = 1
-                while os.path.exists(fname_sys):
-                    fname_sys = path_sys + f"/sys_{self.nbeads:d}beeds_{self.lbox:.2f}lbox_{self.mobilities:.5f}mu_v{k:d}.toml"
-                    k += 1
-        
-        if fout is None:
-            # if system is saved in self.fname_sys, upodate self.fname_sys
-            self.fname_sys = fname_sys
+            fout = self.dir_sys + "/configs/cfg_" + self.name_sys + ".toml"
         
         output = str(self)
+        output = output.replace("=True", "=true") # for toml formating
+        output = output.replace("=False", "=false")
         output = output.replace(" ", "\n")
         output = output.replace("=", " = ")
 
-        f = open(fname_sys, "w")
+        f = open(fout, "w")
         f.write(output)
         f.close()
         

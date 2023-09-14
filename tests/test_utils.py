@@ -1,5 +1,5 @@
-from mucus.utils import load_trajectory
-from mucus.config import Config
+from mucus_rust.utils import load_trajectory
+from mucus_rust.config import Config
 
 
 cfg_path = "/net/storage/janmak98/masterthesis/output/connected-S-mesh-charged/configs/cfg_connected-S-mesh-charged_v0.toml"

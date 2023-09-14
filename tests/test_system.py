@@ -1,5 +1,5 @@
-from mucus.system import System
-from mucus.config import Config
+from mucus_rust.system import System
+from mucus_rust.config import Config
 
 cfg_path = "tests/data/connected-S-mesh/configs/cfg_connected-S-mesh.toml"
 cfg = Config.from_toml(cfg_path)

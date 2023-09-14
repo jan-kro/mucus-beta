@@ -5,6 +5,7 @@ distances/
 systems/
 utils/
 data/
+rust_mucus/
 
 # ignore files
 notes.txt

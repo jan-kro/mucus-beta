@@ -1,10 +1,10 @@
 [tool.poetry]
-name = "mucus"
+name = "mucus_rust"
 version = "0.1.0"
 description = "Simulation package of hydrogel systems"
 authors = ["Jan Maria Kroissenbrunner <janmak98@zedat.fu-berlin.de>"]
 readme = "README.md"
-packages = [{include = "mucus"}]
+packages = [{include = "mucus_rust"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"

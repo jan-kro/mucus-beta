@@ -73,7 +73,19 @@ for frame1, frame2 in zip(traj, traj_2):
         wrong_frames += 1
 print("Number of wrong frames:", wrong_frames, "\n")
 print(f"Time to load trajectory (old):  {tt:.5f}")
-print(f"Time to load trajectory (h5):   {th:.5f}")
+print(f"Time to load trajectory (h5):   {th:.5f}\n")
 print(f"Time to load sliced trajectory (old): {ttso:.5f}")
-print(f"Time to load sliced trajectory (h5):  {ths:.5f}")
+print(f"Time to load sliced trajectory (h5):  {ths:.5f}\n")
 
+ts1 = time()
+mc.utils.save_trajectory(cfg, traj, fname_traj)
+ts1 = time() - ts1
+
+ts2 = time()
+traj_h5 = h5py.File(fname_traj, "w")
+traj_h5.create_dataset("trajectory", traj_shape, dtype="float64")
+traj_h5["trajectory"][:] = traj_2
+ts2 = time() - ts2
+
+print(f"Time to save trajectory (old):  {ts1:.5f}")
+print(f"Time to save trajectory (h5):   {ts2:.5f}\n")

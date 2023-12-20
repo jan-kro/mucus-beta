@@ -1,9 +1,12 @@
 import os
+import h5py
+import toml
 import numpy as np
 from .system import System
 from .config import Config
 from .topology import Topology
-from .utils import get_path, load_trajectory, load_forces
+from .utils import get_path, load_trajectory_h5, load_results, load_forces, _validate_frame_range, get_number_of_frames, ResultsFiletypes
+# TODO import .utils as utils
 import datetime
 import tidynamics as tid # TODO replace with own implementation
 
@@ -12,15 +15,105 @@ class Analysis:
     
     def __init__(self, 
                  cfg: Config, 
-                 frame_range: tuple = None,
+                 frame_range: list = None,
                  stride: int = 1):
         
         self.cfg = cfg
-        self.frame_range = frame_range
+        self.frame_range = _validate_frame_range(frame_range, get_number_of_frames(cfg))
         self.stride = stride
-        self.trajectory = load_trajectory(cfg, frame_range=frame_range, stride=stride)
+        self.n_frames = len(np.arange(self.frame_range[0],self.frame_range[1],self.stride))
+        # TODO 
+        #! do not load whole traj into memory wtf
+        self.trajectory = load_trajectory_h5(cfg, frame_range=self.frame_range, stride=stride)
         self.topology = Topology(cfg)
         self.system = System(cfg)
+        self.time = np.arange(self.frame_range[0],self.frame_range[1],self.stride)*self.cfg.stride*self.cfg.timestep # reduced units
+    
+    def _get_key_dict(self):
+        """
+        TODO UNUSED PROBABLY DELETE
+        """
+        key_dict = {"rdf": [],
+                    "structure_factor": [],
+                    "structure_factor_rdf": [],
+                    "stress_tensor": [],
+                    "msd": [],
+                    "forces": []}
+        return key_dict
+    
+    def _exists(self,
+                key_dict = {"key": "structure_factor",
+                            "params": {"qmax": 2.0, "n": 1000}}):
+        """
+        Checks if a certain calculation was already done
+        """
+        # add frame range and stride to parameters
+        key_dict["params"]["frame_range"] = self.frame_range
+        key_dict["params"]["stride"] = self.stride
+        
+        fname = get_path(self.cfg, filetype="results", overwrite=True)
+        with h5py.File(fname, "a") as fh5:
+            key_params = key_dict["key"] + "_params"
+            if key_params in fh5.keys():
+                if fh5[key_params][()].decode("utf-8") == toml.dumps(key_dict["params"]):
+                    return True
+                else:
+                    return False
+        
+    def _save(self,
+              key_dict = {"key": "foo",
+                          "params": {"a": None, "b": None}},
+              data = None,
+              overwrite = True):
+
+        # add frame range and stride to parameters
+        key_dict["params"]["frame_range"] = self.frame_range
+        key_dict["params"]["stride"] = self.stride
+        
+        fname = get_path(self.cfg, filetype="results", overwrite=overwrite)
+        with h5py.File(fname, "a") as fh5:
+            while True:
+                # check if parameters of spectified calculation already exist
+                if key_dict["key"] + "_params" in fh5.keys():
+                    # if they do exist, check if parameters are the same
+                    if fh5[key_dict["key"] + "_params"][()].decode("utf-8") != toml.dumps(key_dict["params"]):
+                        # ich the same dataset uses different parameters, ask if they should be overwritten
+                        print(f"{key_dict['key']} already exists in the dataset, using different parameters.")
+                        print(f"Old parameters:\n{fh5[key_dict['key'] + '_params'][()].decode('utf-8')}")
+                        print(f"New parameters:\n{toml.dumps(key_dict['params'])}")
+                        overwrite = "y" == input("Do you want to overwrite it? [y/n]: ")
+                        if overwrite:
+                            del fh5[key_dict["key"] + "_params"]
+                            del fh5[key_dict["key"]]
+                            break
+                        # if they should not be overwritten ask for new name
+                        print(f"The following keys are already in the dataset: {[key for key in fh5.keys() if '_params' not in key]}")
+                        key_dict["key"] = input("Please enter a new key: ")
+                        if key_dict["key"] not in fh5.keys():
+                            break
+                    # id dataset alreadty exists and parameters used for calculation are the same, ask if it should be overwritten or if the calculation should be skipped
+                    else:
+                        print(f"File {fname} already contains {key_dict['key']} with the same parameters.")
+                        overwrite = "y" == input("Do you want to overwrite the dataset anyways? [y/n]: ")
+                        if overwrite:
+                            del fh5[key_dict["key"] + "_params"]
+                            del fh5[key_dict["key"]]
+                            break
+                        else:
+                            # if old calculation should not be overwritten, ask if it should be saved under a different name
+                            save = "y" == input("Do you want to save the new calculation under a different name? [y/n]: ")
+                            if save:
+                                print(f"The following keys are already in the dataset: {[key for key in fh5.keys() if '_params' not in key]}")
+                                key_dict["key"] = input("Please enter a new key: ")
+                                if key_dict["key"] not in fh5.keys():
+                                    break
+                            else:
+                                return
+                else:
+                    break
+            
+            fh5.create_dataset(key_dict["key"] + "_params", data=toml.dumps(key_dict["params"]))
+            fh5.create_dataset(key_dict["key"], data=data)
         
     def rdf(self,
             r_range = None,
@@ -30,6 +123,20 @@ class Analysis:
             save=True,
             overwrite=False,
             return_all=False):
+        
+        key_dict = {"key": "rdf",
+                    "params": {"r_range": r_range, 
+                               "n_bins": n_bins,
+                               "bin_width": bin_width,
+                               "tags": tags}}
+        
+        if self._exists(key_dict):
+            fname = get_path(self.cfg, filetype="results", overwrite=overwrite)
+            with h5py.File(fname, "a") as fh5:
+                key = key_dict["key"]
+                r = fh5[key][:,0]
+                g_r = fh5[key][:,1]
+                return r, g_r
         
         # TODO RDF IS BROKEN FOR MULTIPLE PARTICLE TYPES
         
@@ -51,22 +158,11 @@ class Analysis:
         
         
         # create mask for tags
-        mask_1 = list(())
-        mask_2 = list(())
-        for i in range(natoms):
-            mask_1.append(self.topology.tags[i] == tags[0])
-            mask_2.append(self.topology.tags[i] == tags[1])
-        
-        # number of particles per mask
-        n1 = np.sum(mask_1)
-        n2 = np.sum(mask_2)
-        
-        # create bond pair list
-        pairs = list()
-        for i in range(natoms-1):
-            for j in range(i+1, natoms):
-                pairs.append((i, j))
-        pairs = np.array(pairs)
+        # create mask for distances
+        mask_1 = self.topology.tags == tags[0]
+        mask_2 = self.topology.tags == tags[1]
+        mask_1, mask_2 = np.meshgrid(mask_1,mask_2)
+        mask_pairs = np.logical_and(np.logical_and(mask_1, mask_2), np.logical_not(np.eye(self.cfg.n_particles, dtype=bool)))
         
         g_r = np.zeros(n_bins)
         
@@ -76,74 +172,57 @@ class Analysis:
         print("--------------------")
         report_stride = int(len(self.trajectory)//10)
         
-        for i, frame in enumerate(self.trajectory):
-            # make 3d verion of meshgrid
-            r_left = np.tile(frame, (n2, 1, 1)) # repeats vector along third dimension len(a) times
-            r_right = np.reshape(np.repeat(frame, n1, 0), (n2, n1, 3)) # does the same but "flipped"
-            
-            directions = r_left - r_right # this is right considering the mesh method. dir[i, j] = r_j - r_i
+        
+        fname_h5 = get_path(self.cfg, filetype="results", overwrite=overwrite)
+        with h5py.File(fname_h5, "a") as fh5:
+            for i, dist_frame in enumerate(fh5["distances"][self.frame_range[0]:self.frame_range[1]:self.stride]):
 
-            # apply minimum image convetion
-            directions -= self.cfg.lbox*np.round(directions/self.cfg.lbox)
+                
+                distances = dist_frame[mask_pairs]
+                
+                mask_dist = np.logical_and(r_range[0] < distances, distances < r_range[1]) 
 
-            # calculate distances and apply interaction cutoff
-            distances = np.linalg.norm(directions, axis=2)
-            mask_dist = np.logical_and(r_range[0] < distances, distances < r_range[1]) 
+                g_r_frame, edges = np.histogram(distances[mask_dist], range=r_range, bins=n_bins)
+                g_r += g_r_frame
 
-            g_r_frame, edges = np.histogram(distances[mask_dist], range=r_range, bins=n_bins)
-            g_r += g_r_frame
-            
-            if i%report_stride == 0:
-                print(f"{i:<8d} of {len(self.trajectory):8d}") 
-            
-            
-        r = 0.5 * (edges[1:] + edges[:-1])
+                if i%report_stride == 0:
+                    print(f"{i:<8d} of {len(self.trajectory):8d}") 
 
-        # ALLEN TILDERSLEY METHOD:
+
+            r = 0.5 * (edges[1:] + edges[:-1])
+
+            # ALLEN TILDERSLEY METHOD:
+
+            # g_r[i] is average number of atoms which lie to a distance between r[i] and r[i]+dr to each other
+            g_r = g_r/natoms/len(self.trajectory)
+
+            # number density of particles
+            number_density = natoms/self.cfg.lbox**3 # NOTE only for cubical box
+
+            # now normalize by shell volume
+            shell_volumes = (4 / 3) * np.pi * (np.power(edges[1:], 3) - np.power(edges[:-1], 3))
+
+            # normalisation
+            g_r = g_r / shell_volumes / number_density
+
+            # MDTRAJ METHOD:
+            # Normalize by volume of the spherical shell.
+            # See discussion https://github.com/mdtraj/mdtraj/pull/724. There might be
+            # a less biased way to accomplish this. The conclusion was that this could
+            # be interesting to try, but is likely not hugely consequential. This method
+            # of doing the calculations matches the implementation in other packages like
+            # AmberTools' cpptraj and gromacs g_rdf.
+
+            # # unitcell_volumes = np.array(list(map(np.linalg.det, uc_vectors))) # this should be used if the unitcell is not cubic
+            # unitcell_volumes = np.prod(uc_vectors, axis=1)
+            # V = (4 / 3) * np.pi * (np.power(edges[1:], 3) - np.power(edges[:-1], 3))
+            # norm = len(pairs) * np.sum(1.0 / unitcell_volumes) * V # the trajectory length is implicitly included in the uc volumes
+            # g_r = g_r.astype(np.float64) / norm
+
+            # number_density = len(pairs) * np.sum(1.0 / unitcell_volumes) / natoms / len(self.trajectory)
         
-        # g_r[i] is average number of atoms which lie to a distance between r[i] and r[i]+dr to each other
-        g_r = g_r/natoms/len(self.trajectory)
-        
-        # number density of particles
-        number_density = natoms/self.cfg.lbox**3 # NOTE only for cubical box
-        
-        # now normalize by shell volume
-        shell_volumes = (4 / 3) * np.pi * (np.power(edges[1:], 3) - np.power(edges[:-1], 3))
-        
-        # normalisation
-        g_r = g_r / shell_volumes / number_density
-        
-        # MDTRAJ METHOD:
-        # Normalize by volume of the spherical shell.
-        # See discussion https://github.com/mdtraj/mdtraj/pull/724. There might be
-        # a less biased way to accomplish this. The conclusion was that this could
-        # be interesting to try, but is likely not hugely consequential. This method
-        # of doing the calculations matches the implementation in other packages like
-        # AmberTools' cpptraj and gromacs g_rdf.
-        
-        # # unitcell_volumes = np.array(list(map(np.linalg.det, uc_vectors))) # this should be used if the unitcell is not cubic
-        # unitcell_volumes = np.prod(uc_vectors, axis=1)
-        # V = (4 / 3) * np.pi * (np.power(edges[1:], 3) - np.power(edges[:-1], 3))
-        # norm = len(pairs) * np.sum(1.0 / unitcell_volumes) * V # the trajectory length is implicitly included in the uc volumes
-        # g_r = g_r.astype(np.float64) / norm
-        
-        # number_density = len(pairs) * np.sum(1.0 / unitcell_volumes) / natoms / len(self.trajectory)
-        
-        if save == True:
-            fname = get_path(self.cfg, filetype="rdf", overwrite=overwrite)
-            np.save(fname, np.array([r, g_r]))
-            with open(fname[:-4] + ".txt", "w") as f:
-                f.write(f"rdf array with shape [2, {len(g_r)}] corresponding to [[r], [g(r)]]\n")
-                if self.frame_range is not None:
-                    f.write(f"frame range: {self.frame_range[0]:d} - {self.frame_range[1]:d}\n")
-                else:
-                    f.write(f"frame range: all\n")
-                f.write(f"stride: {self.stride:d}\n")
-                f.write(f"r_range: {r_range[0]:f} - {r_range[1]:f}\n")
-                f.write(f"n_bins: {n_bins:d}\n")
-                f.write(f"bin_width: {bin_width:f}\n")
-                f.write(f"tags: ({tags[0]:d}, {tags[1]:d})\n")
-            print(f"rdf saved to {fname}\n")
+        if save:
+            self._save(key_dict, np.array([r, g_r]), overwrite=overwrite)
         
         if return_all:
             return r, g_r, number_density
@@ -151,8 +230,9 @@ class Analysis:
     def structure_factor_rdf(self,
                              g_r        = None,
                              radii      = None,    
+                             tags       = [0,0], 
                              rho        = None, 
-                             qmax       = 2.0, 
+                             qmax       = 2.0,
                              n          = 1000,
                              save       = True,
                              overwrite  = False):
@@ -170,6 +250,9 @@ class Analysis:
             Radial distribution function, g(r).
         radii : np.ndarray
             Independent variable of g(r).
+        tags : list of ints
+            Particle types for which the rdf should be calculated.
+            example tags = [0,1] calculates the rdf between particle types 0 and 1
         rho : float
             .
         qmax : floatAverage number density of particles
@@ -217,21 +300,30 @@ class Analysis:
     def structure_factor(self,
                          qmax = 2, 
                          n = 100,
-                         traj = None,
                          save = True,
                          return_all = False,
-                         overwrite=False):
+                         overwrite=True):
         """directly from trajectory"""
+        
+        # TODO maybe add tags
         
         if not save and not return_all:
             raise ValueError("Either save or return_all has to be True")
         
-        if traj is None:
-            traj = self.trajectory
+        key_dict = {"key": "structure_factor",
+                    "params": {"qmax": qmax, "n": n}}
+        
+        # if the calculation was already done, load it
+        if self._exists(key_dict):
+            fname = get_path(self.cfg, filetype="results", overwrite=overwrite)
+            with h5py.File(fname, "a") as fh5:
+                key = key_dict["key"]
+                Q = fh5[key][0,:]
+                S_q = fh5[key][1,:]
+                return Q, S_q
             
-        n_frames = len(traj)
-        n_atoms = len(traj[0])
-        lbox = self.cfg.lbox
+        n_frames = self.n_frames
+        n_atoms = self.cfg.n_particles
         report_stride = int(n_frames//10)
         
         Q = np.linspace(0.0, qmax, n)
@@ -243,41 +335,25 @@ class Analysis:
         print("Frame    of    Total")
         print("--------------------")
         
-        for k, frame in enumerate(traj):
-            # make 3d verion of meshgrid
-            r_left = np.tile(frame, (n_atoms, 1, 1)) # repeats vector along third dimension len(a) times
-            r_right = np.reshape(np.repeat(frame, n_atoms, 0), (n_atoms, n_atoms, 3)) # does the same but "flipped"
+        # loop over all distances and calculate the structure factor for all q for each frame
+        fname_h5 = get_path(self.cfg, filetype="results", overwrite=True)
+        with h5py.File(fname_h5, "a") as fh5:
             
-            directions = r_left - r_right # this is right considering the mesh method. dir[i, j] = r_j - r_i
+            for k, idx_frame in enumerate(np.arange(self.frame_range[0], self.frame_range[1], self.stride)):
+                # load frame one by one and calculate the structure factor
+                distances = fh5["distances"][idx_frame][np.triu_indices(n_atoms, k = 1)]
+                for n, q in enumerate(Q[1:]):
+                    # calc S(q) for every q in current frame
+                    S_q[n+1] += np.sum(np.sin(q*distances)/(q*distances))
 
-            # apply minimum image convetion
-            directions -= lbox*np.round(directions/lbox)
-
-            # calculate distances and only takes upper triangular matrix
-            distances = np.linalg.norm(directions, axis=2)[np.triu_indices(n_atoms, k = 1)]
-            
-            for n, q in enumerate(Q[1:]):
-                S_q[n+1] += np.sum(np.sin(q*distances)/(q*distances))
-            
-            if k%report_stride == 0:
-                print(f"{k:<8d} of {n_frames:8d}")                
-        print("done\n")
+                if k%report_stride == 0:
+                    print(f"{k:<8d} of {n_frames:8d}")                
+            print("done\n")
         
         S_q = S_q/n_frames/n_atoms
         
         if save:
-            fname = get_path(self.cfg, filetype="structure_factor", overwrite=overwrite)
-            np.save(fname, np.array([Q, S_q]))
-            with open(fname[:-4] + ".txt", "w") as f:
-                f.write(f"structure factor array with shape [2, {len(S_q)}] corresponding to [[q], [S(q)]]\n")
-                if self.frame_range is not None:
-                    f.write(f"frame range: {self.frame_range[0]:d} - {self.frame_range[1]:d}\n")
-                else:
-                    f.write(f"frame range: all\n")
-                f.write(f"stride: {self.stride:d}\n")
-                f.write(f"qmax: {qmax:f}\n")
-                f.write(f"number of S(q) values: {n:d}\n")
-            print(f"structure factor saved to {fname}\n")
+            self._save(key_dict, np.array([Q, S_q]), overwrite=overwrite)
         
         if return_all:
             return Q, S_q
@@ -285,8 +361,19 @@ class Analysis:
     def virial_stress_tensor(self,
                              save = True,
                              return_all = False,
-                             overwrite = False,
+                             overwrite = True,
                              particle_type = 0):
+        
+        key_dict = {"key": "stress_tensor",
+                    "params": {"particle_type": particle_type}}
+        
+        if self._exists(key_dict):
+            fname = get_path(self.cfg, filetype="results", overwrite=overwrite)
+            with h5py.File(fname, "a") as fh5:
+                key = key_dict["key"]
+                sigma_t = fh5[key]
+                return sigma_t
+        
         # sigma = np.zeros((3,3)) # stress tensor reduced units with dimensionality of M/L/T^2
         sigma_t = np.zeros((len(self.trajectory), 3,3)) 
         volume = self.cfg.lbox**3                                                                        # reduced units (volume of box)
@@ -307,7 +394,8 @@ class Analysis:
         print("Loading forces ...")
         
         # TODO maybe do this in the setup
-        forces_traj = load_forces(self.cfg, frame_range=self.frame_range)[mask].reshape(new_shape)
+        forces_traj = load_results(self.cfg,filetype = ResultsFiletypes.Trajectory.value, frame_range = self.frame_range, stride = self.stride)[mask].reshape(new_shape)
+        #forces_traj = load_forces(self.cfg, frame_range=self.frame_range)[mask].reshape(new_shape)
         
         print(f"Calculating stress tensor for system {self.cfg.name_sys} ...\n")
         print("Started at ", datetime.datetime.now(), "\n")
@@ -362,17 +450,7 @@ class Analysis:
         # dt = self.cfg.stride*dt_step # s
         
         if save:
-            fname = get_path(self.cfg, filetype="stress_tensor", overwrite=overwrite)
-            np.save(fname, sigma_t)
-            with open(fname[:-4] + ".txt", "w") as f:
-                f.write(f"stress tensor array with shape {sigma_t.shape} corresponding to [step, i, j]\n")
-                if self.frame_range is not None:
-                    f.write(f"frame range: {self.frame_range[0]:d} - {self.frame_range[1]:d}\n")
-                else:
-                    f.write(f"frame range: all\n")
-                f.write(f"stride: {self.stride:d}\n")
-                f.write(f"used particle type: {particle_type:d}\n")
-            print(f"stress tensor saved to {fname}\n")
+            self._save(key_dict, sigma_t, overwrite=overwrite)
         
         if return_all:
             return sigma_t
@@ -398,6 +476,18 @@ class Analysis:
         msd : np.ndarray
             mean squared displacement of the tracer particle in units of bead radii
         """
+        
+        key_dict = {"key": "msd",
+                    "params": {"tracer_tag": tracer_tag}}
+        
+        if self._exists(key_dict):
+            fname = get_path(self.cfg, filetype="results", overwrite=overwrite)
+            with h5py.File(fname, "a") as fh5:
+                key = key_dict["key"]
+                t = fh5[key][:,0]
+                msd = fh5[key][:,1]
+                return t, msd
+        
         mobility = self.topology.mobility[-1]
         traj_particle = np.squeeze(self.trajectory[:, self.topology.tags == tracer_tag, :])
 
@@ -422,18 +512,21 @@ class Analysis:
         
         t = np.arange(len(msd))*self.cfg.stride*self.cfg.timestep
         
+        # if save:
+        #     fname = get_path(self.cfg, filetype="msd", overwrite=overwrite)
+        #     np.save(fname, np.array([t, msd]))
+        #     with open(fname[:-4] + ".txt", "w") as f:
+        #         f.write(f"msd array with shape [2, {len(msd)}] corresponding to [[t], [msd]]\n")
+        #         if self.frame_range is not None:
+        #             f.write(f"frame range: {self.frame_range[0]:d} - {self.frame_range[1]:d}\n")
+        #         else:
+        #             f.write(f"frame range: all\n")
+        #         f.write(f"stride: {self.stride:d}\n")
+        #         f.write(f"tracer tag: {tracer_tag:d}\n")
+        #     print(f"msd saved to {fname}\n")
+        
         if save:
-            fname = get_path(self.cfg, filetype="msd", overwrite=overwrite)
-            np.save(fname, np.array([t, msd]))
-            with open(fname[:-4] + ".txt", "w") as f:
-                f.write(f"msd array with shape [2, {len(msd)}] corresponding to [[t], [msd]]\n")
-                if self.frame_range is not None:
-                    f.write(f"frame range: {self.frame_range[0]:d} - {self.frame_range[1]:d}\n")
-                else:
-                    f.write(f"frame range: all\n")
-                f.write(f"stride: {self.stride:d}\n")
-                f.write(f"tracer tag: {tracer_tag:d}\n")
-            print(f"msd saved to {fname}\n")
+            self._save(key_dict, np.array([t, msd]), overwrite=overwrite)
             
         if return_all:
             return t, msd        
@@ -468,9 +561,9 @@ class Analysis:
         """
         returns the timestep of the current trajectory in seconds
         """
-        mu = self.topology.mobility[self.topology.tags == 0][0][0]  # mobility of the system in reduced units
-        a = 1e-9*self.config.r0_nm                                  # m, reduced legth scale: PEG monomere radius
-        r = 1*a                                                     # m, bead radius
+        mu = self.topology.mobility[self.topology.tags[monomer_tag]] # mobility of the system in reduced units
+        a = 1e-9*self.cfg.r0_nm                                   # m, reduced legth scale: PEG monomere radius
+        r = 1*a                                                      # m, bead radius
 
         eta_w = 8.53e-4 # Pa*s
         kB = 1.380649e-23 # m^2 kg s^-2 K^-1
@@ -487,33 +580,20 @@ class Analysis:
         """
         Henriks acf code
         """
-
         meana = int(subtract_mean)*np.mean(a)
-
         a2 = np.append(a-meana, np.zeros(2**int(np.ceil((np.log(len(a))/np.log(2))))-len(a)))
-
         data_a = np.append(a2, np.zeros(len(a2)))
-
         fra = np.fft.fft(data_a)
 
         if b is None:
-
             sf = np.conj(fra)*fra
-
         else:
-
             meanb = int(subtract_mean)*np.mean(b)
-
             b2 = np.append(b-meanb, np.zeros(2**int(np.ceil((np.log(len(b))/np.log(2))))-len(b)))
-
             data_b = np.append(b2, np.zeros(len(b2)))
-
             frb = np.fft.fft(data_b)
-
             sf = np.conj(fra)*frb
-
         res = np.fft.ifft(sf)
-
         cor = np.real(res[:len(a)])/np.array(range(len(a),0,-1))
 
         return cor

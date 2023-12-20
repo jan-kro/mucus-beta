@@ -1,12 +1,13 @@
 import numpy as np
 import os
 import toml
+import h5py
 
 import rust_mucus as rmc
 
 from .config import Config
 from .topology import Topology
-from .utils import get_path
+from .utils import get_path, get_number_of_frames
 from pathlib import Path
 from tqdm import tqdm
 
@@ -16,13 +17,14 @@ from copy import deepcopy
 class System:
     
     def __init__(self, config: Config):
-        
+
         self.config = config
         self.topology = Topology(self.config)
         
         self.timestep               = None
         self.n_frames               = None
-        self.n_beads                = None
+        self.chunksize              = None
+        self.n_particles            = None
         self.B_debye                = None        
         self.box_length             = None
         self.shifts                 = None
@@ -40,40 +42,51 @@ class System:
         self.version                = ""
         self.steps_total            = 0
         
-        # TODO IMPLEMENT THIS IN THE PROPER CLASSES
-        self.bond_table             = None
-        self.charges                = None
-        self.tags                   = None
+        self.traj_chunk             = None
+        self.force_chunk            = None
+        self.dist_chunk             = None
+        
+        # TODO IMPLEMENT THIS PROPERLY
+        self.mobility_list          = None
+        self.bonds                  = None
         
         self.setup()
         
-        
-    
-    # TODO: redo the bond list so that every bond pair only exists once
-    
+    # THIS !!!!!
     # TODO ceneter box around 0
     
+    #TODO
+    #! first distances frame is appearently all zeros
     
     def setup(self):
         
-        self.n_beads         = self.config.n_beads
+        self.n_particles     = self.config.n_particles
         self.box_length      = self.config.lbox
         self.timestep        = self.config.timestep
         self.lB_debye        = self.config.lB_debye # units of beed radii                                       
+        
+        self.traj_chunk      = np.zeros((self.config.chunksize, self.n_particles, 3))
+        self.force_chunk     = np.zeros((self.config.chunksize, self.n_particles, 3))
+        self.dist_chunk      = np.zeros((self.config.chunksize, self.n_particles, self.n_particles))
+        
+        self.forces          = np.zeros((self.n_particles, 3), dtype=np.float64)
         
         # TODO implement this properly
         self.r0_beeds_nm     = self.config.r0_nm # 0.1905 # nm calculated radius for one PEG Monomer
         self.B_debye         = np.sqrt(self.config.c_S)*self.r0_beeds_nm/10 # from the relationship in the Hansing thesis [c_S] = mM
         self.n_frames        = int(np.ceil(self.config.steps/self.config.stride))
- 
+        self.mobility_list   = np.array([self.topology.mobility[i] for i in self.topology.tags], ndmin=2).reshape(-1, 1)
+        
+        
+        
         # calculate debye cutoff from salt concentration
         if self.config.cutoff_debye == None:
             self.get_cutoff_debye()
         
         # create nxn index table 
-        self.idx_table = np.zeros((2, self.n_beads, self.n_beads), dtype=int)
-        for i in range(self.n_beads):
-            for j in range(self.n_beads):
+        self.idx_table = np.zeros((2, self.n_particles, self.n_particles), dtype=int)
+        for i in range(self.n_particles):
+            for j in range(self.n_particles):
                 self.idx_table[0, i, j] = i
                 self.idx_table[1, i, j] = j
         
@@ -91,23 +104,16 @@ class System:
                    
             self.create_shifts()
         
+        # create bond_list
+        self.bonds = []
+        for i in range(self.n_particles-1):
+            for j in range(i+1, self.n_particles):
+                if self.topology.bond_table[i, j] == True:
+                    self.bonds.append((i, j))
+        self.bonds = np.array(self.bonds)
+        
         # load positions
         self.set_positions(self.topology.positions)
-
-        # TODO REMOVE AFTER TESTING
-        bond_table = np.zeros((self.n_beads, self.n_beads), dtype=bool)
-        for ij in self.topology.bonds:
-            bond_table[ij[0], ij[1]] = True
-        self.bond_table = bond_table
-        
-        # create charge list
-        charges_all = np.array(self.topology.q_bead)
-        charges = np.zeros(self.topology.ntags)
-        for i, charge in zip(self.topology.tags, charges_all):
-            charges[i] = charge
-        self.charges = charges
-        
-        self.tags = np.array(self.topology.tags, dtype=np.uint)
 
     def print_sim_info(self):
         """
@@ -180,173 +186,7 @@ class System:
         
         return
     
-    def get_distances_directions(self):
-        """
-        updated dist/dir calculation that uses MINIMUM IMAGE CONVENTION, not my bs!
-        """
-        
-        # TODO could be faster by only calculating triu matrix
-
-        # shift box to center
-        # TODO DELETE THIS LATER
-        
-        self.positions -= self.box_length/2 #np.array((self.box_length/2, self.box_length/2, self.box_length/2))
-        
-        # # make 3d verion of meshgrid
-        # r_left = np.tile(self.positions, (self.n_beads, 1, 1)) # repeats vector along third dimension len(a) times
-        # r_right = np.reshape(np.repeat(self.positions, self.n_beads, 0), (self.n_beads, self.n_beads, 3)) # does the same but "flipped"
-
-        # directions = r_left - r_right # this is right considering the mesh method. dir[i, j] = r_j - r_i
-
-        # # apply minimum image convetion
-        # directions -= self.box_length*np.round(directions/self.box_length)
-
-        # # calculate distances and apply interaction cutoff
-        # distances = np.linalg.norm(directions, axis=2)
-        distances = np.zeros((self.n_beads, self.n_beads))
-        directions = np.zeros((self.n_beads, self.n_beads, 3))
-        rmc.get_dist_dir(self.positions, distances, directions, self.box_length, self.n_beads)
-
-        # add cutoff to the self distances so they are not indiced in the intereftions 
-        # NOTE this could probably be done in a smarter way
-        distances += 2*self.config.cutoff_pbc*np.eye(self.n_beads) # add cutoff to disregard same atoms
-        L_box = distances < self.config.cutoff_pbc # NOTE the "<" is important, because if it was "<=" the diagonal values would be included
-        
-        # only save dist/dir, that lie within the interaction cutoff
-        self.directions = directions[L_box]
-        self.distances  = distances[L_box]
-        self.idx_interactions = self.idx_table[:, L_box].T
-
-        # shift box back again
-        # TODO delete later
-        self.positions += self.box_length/2
-        
-        # loop through index list and see if any tuple corresponds to bond        
-        L_nn = list(())
-        for idx in self.idx_interactions:
-            if np.any(np.logical_and(idx[0] == self.topology.bonds[:, 0], idx[1] == self.topology.bonds[:, 1])):
-                L_nn.append(True)
-            else:
-                L_nn.append(False)
-                
-        self.L_nn = L_nn
-        
-        return
-
-    def get_forces(self):
-        """
-        Delete all old forces and add all forces occuring in resulting from the self.positions configuration
-        
-        This only works because the forces are defined in a way where they are directly added to the self.forces variable
-        """
-        
-        # delete old forces
-        self.forces = np.zeros((self.n_beads, 3))
-        
-        # add new forces
-        self.force_NearestNeighbours()
-        self.force_LennardJones_cutoff()
-        self.force_Debye()
-        
-        return
-    
-    def get_forces_test(self, output=False):
-        """
-        for testing the forces
-        """
-        
-        print("Position")
-        print(self.positions)
-        
-        self.get_distances_directions()
-        
-        #delete old forces
-        self.forces = np.zeros((self.n_beads, 3))
-        self.force_NearestNeighbours()
-        print("nearest neighbours")
-        print(self.forces)
-        
-        force_nn = deepcopy(self.forces)
-        
-        self.forces = np.zeros((self.n_beads, 3))
-        self.force_LennardJones_cutoff()
-        print("Lennard Jones")
-        print(self.forces)
-        
-        force_lj = deepcopy(self.forces)
-        
-        self.forces = np.zeros((self.n_beads, 3))
-        self.force_Debye()
-        print("Debye")
-        print(self.forces)
-        
-        force_deb = deepcopy(self.forces)
-        
-        if output == True:
-            return force_nn, force_lj, force_deb
-
-    
-    def force_NearestNeighbours(self):
-        """
-        harmonice nearest neighhbour interactions
-        """
-                
-        idxs = self.idx_interactions[self.L_nn]
-        distances = self.distances[self.L_nn].reshape(-1,1)
-        directions = self.directions[self.L_nn]
-        force_constants = self.topology.force_constant_nn[self.topology.get_tags(idxs[:,0], idxs[:,1])].reshape(-1,1)
-        r0 = self.topology.r0_bond[self.topology.get_tags(idxs[:,0], idxs[:,1])].reshape(-1,1)
-        
-        # calculate the force of every bond at once
-        forces_temp = 2*force_constants*(1-r0/distances)*directions 
-
-        for i, force in zip(idxs[:, 0], forces_temp):
-            self.forces[i, :] += force
-        
-        return
-
-    def force_LennardJones_cutoff(self):
-        """
-        LJ interactions using a cutoff
-        """
-        
-        L_lj = self.distances < self.config.cutoff_LJ
-        
-        idxs = self.idx_interactions[L_lj]
-        distances = self.distances[L_lj].reshape(-1, 1)
-        directions = self.directions[L_lj]
-        epsilon = self.topology.epsilon_lj[self.topology.get_tags(idxs[:,0], idxs[:,1])].reshape(-1,1)
-        sigma = self.topology.sigma_lj[self.topology.get_tags(idxs[:,0], idxs[:,1])].reshape(-1,1)
-        
-        # the exponents are higher so the directions are normalized
-        forces_temp = 4*epsilon*(-12*sigma**12/distances**14 + 6*sigma**7/distances**8)*directions 
-
-        for i, force in zip(idxs[:, 0], forces_temp):
-            self.forces[i, :] += force
-            
-        return
-
-    def force_Debye(self):
-        """
-        non bonded interaction (debye screening)
-        """
-        
-        # exclude bonds
-        L_nb = np.logical_not(self.L_nn)
-        
-        idxs = self.idx_interactions[L_nb]
-        distances = self.distances[L_nb].reshape(-1, 1)
-        directions = self.directions[L_nb]
-        q2 = self.topology.q_bead[idxs[:,0]]*self.topology.q_bead[idxs[:,1]]
-        
-        # since the debye cutoff is used for the dist/dir cutoff the distances dont have to be checked
-        forces_temp = -q2*self.config.lB_debye*(1+self.B_debye*distances)*np.exp(-self.B_debye*distances)*directions/distances**3
-        
-        for i, force in zip(idxs[:, 0], forces_temp):
-            self.forces[i, :] += force
-        
-        return
-
+    # TODO MOVE THIS TO UTILS
     def get_cutoff_debye(self, eps=1):
         """
         use the maximum charge in the config to determine the debey force cutoff
@@ -359,7 +199,7 @@ class System:
         # TODO CHANGE TO MAX DISPLACEMENT = 0.1 
         while np.max(force) > eps:
             r += dr
-            force = np.max(self.topology.q_bead)**2*self.config.lB_debye*(1+self.B_debye*r)*np.exp(-self.B_debye*r)/r**2
+            force = np.max(self.topology.q_particle)**2*self.config.lB_debye*(1+self.B_debye*r)*np.exp(-self.B_debye*r)/r**2
             
         self.config.cutoff_debye = r
         
@@ -374,7 +214,7 @@ class System:
         # the std used here is sqrt(2*mu)
         
         # TODO THIS WILL BREAK WHEN MOBILITY IS CHANGED TO SHAPE (ntags)
-        return np.sqrt(2*self.timestep*self.topology.mobility)*np.random.randn(self.n_beads, 3)    
+        return np.sqrt(2*self.timestep*self.mobility_list)*np.random.randn(self.n_particles, 3)    
     
     
     # TODO USE utils.get_fname INSTEAD
@@ -553,14 +393,10 @@ class System:
         
         return
     
-    def simulate(self, steps=None, save_sys=True, overwrite_sys=False, report_time=True, report_stride=1000, max_dist=None):
+    def simulate(self, steps=None, max_dist=None, check_explosion=True):
         """
         Simulates the brownian motion of the system with the defined forcefield using forward Euler.
         """
-        
-        # NOTE This doeasnt make sense enymore
-        # if self.positions is None:
-        #     self.create_chain()
         
         if steps == None:
             steps = self.config.steps
@@ -570,94 +406,143 @@ class System:
         
         t_start = time()
         
-        idx_traj = 1 # because traj[0] is already the initial position
+        idx_chunk = 1 # because traj_chunk[0] is already the initial position
+        idx_traj = 0
+        
+        # initialize results h5 file
+        fh5_results = h5py.File(get_path(self.config, filetype='results'), 'w-')
+        
+        n_frames = get_number_of_frames(self.config)
         
         # save initial pos
         if self.config.write_traj==True:
-            fname_traj = self.create_fname(filetype="trajectory", overwrite=overwrite_sys)
-            f_traj = open(fname_traj, "a")
-            self.write_frame_gro(self.n_beads, self.positions, self.timestep*self.steps_total, f_traj, comment=f"traj step 0") # write frame 0 with initial positions
+            self.traj_chunk[0] = self.positions
+            fh5_results.create_dataset("trajectory", shape=(n_frames, self.n_particles, 3), dtype="float64")
             
         if self.config.write_forces==True:
-            fname_force = self.create_fname(filetype="forces", overwrite=overwrite_sys)
-            f_force = open(fname_force, "a")
-            self.get_distances_directions()
-            self.get_forces()
-            self.write_frame_force(self.forces, f_force, 0)
+            rmc.get_forces(
+                self.positions,
+                self.topology.tags,
+                self.topology.bond_table,
+                self.topology.force_constant_nn,
+                self.topology.r0_bond,
+                self.topology.sigma_lj,
+                self.topology.epsilon_lj,
+                self.topology.q_particle,
+                self.config.lB_debye,
+                self.B_debye,
+                self.forces,
+                self.dist_chunk[idx_chunk],
+                self.box_length,
+                self.config.cutoff_pbc**2,
+                self.n_particles,
+                3,
+                False,
+                True,
+                True,
+                False
+            )
+            
+            self.force_chunk[0] = self.forces
+            fh5_results.create_dataset("forces", shape=(n_frames, self.n_particles, 3), dtype="float64")
+        
+        # define flag for distance writing
+        if self.config.write_distances:
+            write_distances = True
+            fh5_results.create_dataset("distances", shape=(n_frames, self.n_particles, self.n_particles), dtype="float64")
+        else:    
+            write_distances = False
         
         print(f"\nStarting simulation with {steps} steps.")
         for step in tqdm(range(1, steps)):
             
             # calculate forces
             self.forces.fill(0)
-            rmc.get_forces(self.positions, 
-                           self.tags, 
-                           self.bond_table, 
-                           self.topology.force_constant_nn, 
-                           self.topology.r0_bond, 
-                           self.topology.sigma_lj,
-                           self.topology.epsilon_lj,      
-                           self.charges,          
-                           self.config.lB_debye,         
-                           self.B_debye,          
-                           self.forces, 
-                           self.box_length, 
-                           self.config.cutoff_pbc**2, 
-                           self.n_beads, 
-                           3, 
-                           True, 
-                           True, 
-                           False)
+            rmc.get_forces(
+                self.positions,
+                self.topology.tags,
+                self.topology.bond_table,
+                self.topology.force_constant_nn,
+                self.topology.r0_bond,
+                self.topology.sigma_lj,
+                self.topology.epsilon_lj,
+                self.topology.q_particle,
+                self.config.lB_debye,
+                self.B_debye,
+                self.forces,
+                self.dist_chunk[idx_chunk],
+                self.box_length,
+                self.config.cutoff_pbc**2,
+                self.n_particles,
+                3,
+                write_distances,
+                True,
+                True,
+                False
+            )
             
-            # integrate
-            self.positions = self.positions + self.timestep*self.topology.mobility*self.forces + self.force_Random()
+            # reset distance flag until next stride
+            write_distances = False
+            
+            # integrate                                     # TODO implement mobility in forces
+            self.positions = self.positions + self.timestep*self.mobility_list*self.forces + self.force_Random()
             
             # apply periodic boundary conditions (0, L) x (0, L) x (0, L)
             self.apply_pbc()
 
             
-            if (self.config.write_traj==True) and (step%self.config.stride==0):
+            if step%self.config.stride==0:
+                
+                if self.config.write_traj:    
+                    self.traj_chunk[idx_chunk] = self.positions
+                
+                if self.config.write_forces:
+                    self.force_chunk[idx_chunk] = self.forces
                     
-                # TODO add condition for direct writing
-                self.write_frame_gro(self.n_beads, self.positions, self.timestep*self.steps_total, f_traj, comment=f"traj step {step:d}")
-                idx_traj += 1
+                if self.config.write_distances:
+                    write_distances = True
+                    
+                idx_chunk += 1
                 
-                d = self.positions[self.topology.bonds[:, 0]] - self.positions[self.topology.bonds[:, 1]]
-                d -= np.round(d/self.box_length)*self.box_length
+                if idx_chunk == self.config.chunksize:
+                    if self.config.write_traj:
+                        fh5_results["trajectory"][idx_traj:idx_traj+self.config.chunksize] = self.traj_chunk
+                    
+                    if self.config.write_forces:    
+                        fh5_results["forces"][idx_traj:idx_traj+self.config.chunksize] = self.force_chunk
+                        
+                    if self.config.write_distances:
+                        fh5_results["distances"][idx_traj:idx_traj+self.config.chunksize] = self.dist_chunk
+                    
+                    idx_traj += self.config.chunksize
+                    idx_chunk = 0
                 
-                # check if sys exploded
-                if np.any(np.linalg.norm(d, axis=1) > max_dist):
-                    print(f"Distances between bonded atoms larger than maxdist = {max_dist}")
-                    print("System exploded")
-                    print("simulation Step", step)
-                    break
+                    # if check_explosion: 
+                    #     #! THIS TYPE OF INDEXING DOESNT WORK ANYMORE
+                    #     d = self.positions[self.bonds[:, 0]] - self.positions[self.bonds[:, 1]]
+                    #     d -= np.round(d/self.box_length)*self.box_length
+                    #     if np.any(np.abs(d) > max_dist):
+                    #         print(f"Distances between bonded atoms larger than maxdist = {max_dist}")
+                    #         print("System exploded")
+                    #         print("simulation Step", step)
+                    #         break
                 
-                if self.config.write_forces==True:
-                    self.write_frame_force(self.forces, f_force, step)
-            
-            #if (report_time==True) and (step%report_stride==0):
-            #    print(f"Step {step:12d} of {steps:12d} | {int((time()-t_start)//60):6d} min {int((time()-t_start)%60):2d} s")
-            
             self.steps_total += 1
-            
-            # if np.any(self.distances[self.L_nn] > 5):
-            #     print("System exploded")
-            #     print("simulation Step", step)
-            #     break
             
         t_end = time()
         
         self.config.simulation_time = t_end - t_start
         
-        if self.config.write_forces==True:
-            f_force.close()
-            
-        if self.config.write_traj==True:
-            f_traj.close()
-            
+        # fill rest of trajectory in case the steps//stride is not a multiple of the chunksize
+        if idx_traj!= n_frames:
+            if self.config.write_traj:
+                fh5_results["trajectory"][idx_traj:] = self.traj_chunk[:idx_chunk-1]
+            if self.config.write_forces:
+                fh5_results["forces"][idx_traj:] = self.force_chunk[:idx_chunk-1]
+                
+        fh5_results.close()
         
-        if save_sys == True:
-            print("\nSaved system to")
-            self.save_config(overwrite=overwrite_sys, print_fname=True)
+        # save config
+        self.config.save()
 
         return

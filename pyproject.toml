@@ -11,6 +11,10 @@ python = "^3.10"
 numpy = "^1.23.5"
 toml = "0.10.2"
 pydantic = "1.10.4"
+tidynamics = "1.0.0"
+h5py = "3.9.0"
+rust_mucus = {path = "/local_scratch/janmak98/rust_mucus/", develop = false }
+
 
 
 [build-system]

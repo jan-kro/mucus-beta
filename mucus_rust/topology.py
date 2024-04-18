@@ -4,12 +4,13 @@ import numpy as np
 from .config import Config
 from typing import Optional
 from pathlib import Path
+from .utils import get_path
 
 class Topology:
     
     def __init__(self, Config: Config):
         
-        self.positions = np.load(self._get_path(Config, "init_pos"))
+        self.positions = np.load(get_path(Config, "init_pos"))
         params = self._load_params(Config)
         
         self.r_particle         = np.array(params["r_particles"])
@@ -35,7 +36,7 @@ class Topology:
         # self.save(Config)
     
     def _load_params(self, Config: Config):
-        params = toml.load(open(self._get_path(Config, "parameters"), encoding="UTF-8"))
+        params = toml.load(open(get_path(Config, "parameters"), encoding="UTF-8"))
         
         # BACKWARDS COMPATIBILITY
         if "rbeads" in params.keys():
@@ -188,7 +189,7 @@ class Topology:
         param_exists = False
         filetpes = ["init_pos", "parameters"]
         for filetype in filetpes:
-            filename = self._get_path(config, filetype, overwrite=True)
+            filename = get_path(config, filetype, overwrite=True)
             
             # check if path already exists
             if os.path.exists(filename):

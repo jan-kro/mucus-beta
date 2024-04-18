@@ -12,7 +12,7 @@ class Config(BaseModel, arbitrary_types_allowed=True):
     The config file contains all the information of the system and where everything is saved
     """
     
-    steps:              int
+    steps:              int 
     stride:             int
     n_particles:        int
     timestep:           float
@@ -33,7 +33,7 @@ class Config(BaseModel, arbitrary_types_allowed=True):
     dir_sys:            Optional[str]           = None
     simulation_time:    Optional[float]         = None
 
-    
+    # TODO shift all force field related parameters to topology
     # TODO add current time and date to properly track everything (maybe, because it is aleady in the file properties)
     
     @classmethod

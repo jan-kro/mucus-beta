@@ -5,76 +5,81 @@ import numpy as np
 import rust_mucus as rmc
 import h5py
 from .config import Config
-from .topology import Topology
 from typing import Optional
 from pathlib import Path
 from io import StringIO
 from tqdm import tqdm
 
-
 # TODO USE THIS INSTEAD OF STRINGS TO SPECIFY DATASET TYPE
+
 class Filetypes(enum.Enum):
-    Trajectory = "trajectory"
-    Forces = "forces"
-    Distances = "distances"
-    Rdf = "rdf"
-    StructureFactor = "structure_factor"
-    StructureFactorRdf = "structure_factor_rdf"
-    StressTensor = "stress_tensor"
-    Msd = "msd"
-    Results = "results"
-    Config = "config"
-    Parameters = "parameters"
-    InitPos = "init_pos"
+    Trajectory          = "trajectory"
+    TrajectoryGro       = "trajectory_gro"
+    Forces              = "forces"
+    Distances           = "distances"
+    Rdf                 = "rdf"
+    StructureFactor     = "structure_factor"
+    StructureFactorRdf  = "structure_factor_rdf"
+    StressTensor        = "stress_tensor"
+    Msd                 = "msd"
+    Results             = "results"
+    Config              = "config"
+    Parameters          = "parameters"
+    InitPos             = "init_pos"
 
 
 class ResultsFiletypes(enum.Enum):
-    Trajectory = Filetypes.Trajectory.value
-    Forces = Filetypes.Forces.value
-    Distances = Filetypes.Distances.value
-    Rdf = Filetypes.Rdf.value
-    StructureFactor = Filetypes.StructureFactor.value
-    StructureFactorRdf = Filetypes.StructureFactorRdf.value
-    StressTensor = Filetypes.StressTensor.value
-    Msd = Filetypes.Msd.value
+    Trajectory          = Filetypes.Trajectory.value
+    TrajectoryGro       = Filetypes.TrajectoryGro.value
+    Forces              = Filetypes.Forces.value
+    Distances           = Filetypes.Distances.value
+    Rdf                 = Filetypes.Rdf.value
+    StructureFactor     = Filetypes.StructureFactor.value
+    StructureFactorRdf  = Filetypes.StructureFactorRdf.value
+    StressTensor        = Filetypes.StressTensor.value
+    Msd                 = Filetypes.Msd.value
 
 class ParametersFiletypes(enum.Enum):
-    Config = Filetypes.Config.value
-    Parameters = Filetypes.Parameters.value
-    InitPos = Filetypes.InitPos.value
-    ParticleRadius = "r_particles"
-    ParticleCharge = "q_particles"
-    Mobility = "mobilities"
-    ForceConstant = "force_constants"
-    LjEpsilon = "epsilon_LJ"
-    LjSigma = "sigma_LJ"
-    BondTable = "bond_table"
-    BondDistance = "r0_bonds"
-    Tags = "tags"
+    Config              = Filetypes.Config.value
+    Parameters          = Filetypes.Parameters.value
+    InitPos             = Filetypes.InitPos.value
+    ParticleRadius      = "r_particles"
+    ParticleCharge      = "q_particles"
+    Mobility            = "mobilities"
+    ForceConstant       = "force_constants"
+    LjEpsilon           = "epsilon_LJ"
+    LjSigma             = "sigma_LJ"
+    BondTable           = "bond_table"
+    BondDistance        = "r0_bonds"
+    Tags                = "tags"
 
 
 class ConfigParameters(enum.Enum):
-    Steps = "steps"
-    Stride = "stride"
-    NumParticles = "n_particles"
-    Timestep = "timestep"
-    LengthScaleIn_nm = "r0_nm"
-    LjCutoff = "cutoff_LJ"
-    BjerrumLength = "lB_debye"
-    SaltConcentration = "c_S"
-    DebyeCutoff = "cutoff_debye"
-    BoxLength = "lbox"
-    Pbc = "pbc"
-    PbcCutoff = "cutoff_pbc"
-    WriteTraj = "write_traj"
-    Cunksize = "chunksize"
-    WriteForces = "write_forces"
-    WriteDistances = "write_distances"
-    Cwd = "cwd"
-    NameSys = "name_sys"
-    DirSys = "dir_sys"
-    SimulationTime = "simulation_time"
+    Steps               = "steps"
+    Stride              = "stride"
+    NumParticles        = "n_particles"
+    Timestep            = "timestep"
+    LengthScaleIn_nm    = "r0_nm"
+    LjCutoff            = "cutoff_LJ"
+    BjerrumLength       = "lB_debye"
+    SaltConcentration   = "c_S"
+    DebyeCutoff         = "cutoff_debye"
+    BoxLength           = "lbox"
+    Pbc                 = "pbc"
+    PbcCutoff           = "cutoff_pbc"
+    WriteTraj           = "write_traj"
+    Cunksize            = "chunksize"
+    WriteForces         = "write_forces"
+    WriteDistances      = "write_distances"
+    Cwd                 = "cwd"
+    NameSys             = "name_sys"
+    DirSys              = "dir_sys"
+    SimulationTime      = "simulation_time"
 
+class NatrualConstantsSI(enum.Enum):
+    kB = 1.380649e-23 # m^2 kg s^-2 K^-1
+    T = 300 # K
+    
 # Enum ForceType 
 #     None
 #     Harmonic{k: f64},
@@ -102,75 +107,25 @@ class ConfigParameters(enum.Enum):
 # dset_to_write = Dataset.Trajectory
 # print(file[dset_to_write.value])
 
-
+# TODO somehow make this more elegant (also Enum class?)
 def _dir_dict():
     
-    dir_dict = {"trajectory":           ("/trajectories/traj_",                 ".gro"),
+    dir_dict = {"trajectory_gro":       ("/snapshots/traj_",                    ".gro"),
                 "config":               ("/configs/cfg_",                       ".toml"),
                 "parameters":           ("/parameters/param_",                  ".toml"),
                 "init_pos":             ("/initial_positions/xyz_",             ".npy"),
-                "rdf":                  ("/results/rdf/rdf_",                   ".npy"),
-                "structure_factor":     ("/results/structure_factor/Sq_",       ".npy"),
-                "structure_factor_rdf": ("/results/structure_factor/Sq_rdf_",   ".npy"),
-                "stress_tensor":        ("/results/stress_tensor/sigma_",       ".npy"),
-                "msd":                  ("/results/msd/msd_",                   ".npy"),
-                "forces":               ("/forces/forces_",                     ".txt"),
+                "rdf":                  ("/results/rdf_",                       ".hdf5"),
+                "structure_factor":     ("/results/Sq_",                        ".hdf5"),
+                "structure_factor_rdf": ("/results/Sq_rdf_",                    ".hdf5"),
+                "stress_tensor":        ("/results/sigma_",                     ".hdf5"),
+                "msd":                  ("/results/msd_",                       ".hdf5"),
+                "trajectory":           ("/results/traj_",                      ".hdf5"),
+                "forces":               ("/results/forces_",                    ".hdf5"),
+                "distances":            ("/results/distances_",                 ".hdf5"),
                 "results":              ("/results/results_",                   ".hdf5")}
 
     return dir_dict
 
-def _get_results_filetypes():
-    return ["trajectory", "forces", "distances", "rdf", "structure_factor", "structure_factor_rdf", "stress_tensor", "msd"]
-
-# TODO THIS DOES NOTHING REMOVE
-def _create_results(fname: str = None, 
-                    dataset: str = "trajectory",
-                    shape: list = None,
-                    maxshape: list = None,
-                    dtype: str = "float64"):
-    """
-    Creates the h5 file containing a dataset of the specified filetype. If the dataset does not exist, it is created.
-    If the h5 file does not exist, it is created. 
-    
-    datasets:
-        "trajectory"
-        "forces"
-        "distances"
-        "rdf"
-        "structure_factor"
-        "structure_factor_rdf"
-        "stress_tensor"
-    
-    Parameters:
-    ----------
-    Config: Config object
-        Containing all information of the system to analyze
-    dataset: str
-        Type of dataset to load
-    shape: list
-        Shape of the dataset (only used if dataset is not yet contained in the h5 file)
-    maxshape: list
-        Maxshape of the dataset (only used if dataset is not yet contained in the h5 file)
-    dtype: str
-        Dtype of the dataset (only used if dataset is not yet contained in the h5 file)
-    overwrite: bool
-        If False, the system name is appended with a version number if the h5 file already exists
-        and a new h5 file is created.
-    """
-    
-    result_filetypes = _get_results_filetypes()
-        
-    h5 = h5py.File(fname, "a")
-    
-    # check id dataset type is valid, so that there is not wrong dataset created by accident
-    if not dataset in result_filetypes:
-        raise ValueError(f"{dataset} is not a valid dataset type")
-    
-    # create dataset if it is not yet contained in the h5 file
-    if dataset not in h5.keys():
-        ds = h5.create_dataset(dataset, shape=shape, maxshape=maxshape, dtype=dtype)
-        
-    h5.close()
     
 def get_path(Config: Optional[Config], 
              filetype: str = "trajectory",
@@ -270,183 +225,6 @@ def get_version(config: Config):
 
     return version
 
-
-def load_forces(config: Optional[Config],
-                frame_range: list = None,
-                stride: int = 1):
-    """
-    Loads Forces into numpy array for the given range of frames.
-    If frame_range is None, all frames are loaded.
-    """
-    
-    # if config is given as a path, load it
-    if isinstance(config, str):
-        config = Config.from_toml(config)
-
-    # get number of frames
-    n_frames = get_number_of_frames(config)
-    frame_range = _validate_frame_range(frame_range, n_frames)
-    
-    # get traj path
-    h5path = get_path(config, filetype="results")
-    
-    if os.path.exists(h5path):
-        with h5py.File(h5path, "r") as h5:
-            if "forces" in h5.keys():
-                return h5["forces"][frame_range[0]:frame_range[1]:stride]
-
-    # if no h5 file exists, load forces from txt file
-    fname_traj = get_path(config, filetype="forces")
-    
-    # TODO create force file using rust function
-    # if not os.path.exists(fname_traj):
-    #     print(f"forces file {fname_traj} not found")
-    #     print(f"Creating forces file from {config.name_sys}.gro ...")
-        
-    #     # create sys and load trajectory
-    #     traj = load_trajectory(config)
-    #     sys = System(config)
-        
-    #     f_force = open(fname_traj, "a")
-    #     forces_frame = np.zeros((config.n_particles, 3))
-    #     for i, frame in tqdm(enumerate(traj)):
-    #         sys.set_positions(frame)
-    #         forces_frame.fill(0)
-    #         rmc.get_forces(frame, 
-    #                        sys.tags, 
-    #                        self.bond_table, 
-    #                        self.topology.force_constant_nn, 
-    #                        self.topology.r0_bond, 
-    #                        self.topology.sigma_lj,
-    #                        self.topology.epsilon_lj,      
-    #                        self.charges,          
-    #                        self.config.lB_debye,         
-    #                        self.B_debye,          
-    #                        self.forces, 
-    #                        self.box_length, 
-    #                        self.config.cutoff_pbc**2, 
-    #                        self.n_particles, 
-    #                        3, 
-    #                        True, 
-    #                        True, 
-    #                        False)
-    #         sys.write_frame_force(sys.forces, f_force, i)
-
-    #     f_force.close()
-    #     print("Done.")
-    
-    # handle frame range input
-    if frame_range is None:
-        frame_range = (0, n_frames)
-    if frame_range[0] == None:
-        frame_range[0] = 0
-    if frame_range[1] == None:
-        frame_range[1] = n_frames
-    if frame_range[0] < 0 or frame_range[1] > n_frames:
-        raise ValueError("frame range out of bounds")
-
-    # initialize forces array
-    forces = np.zeros(((frame_range[1] - frame_range[0] - 1)//stride + 1, config.n_particles, 3))
-    idx_traj = 0
-    
-    with open(fname_traj, "r") as f:
-        
-        for idx_frame in range(n_frames):
-            if idx_frame == frame_range[1]:
-                break
-            if (frame_range[0] <= idx_frame) and ((idx_frame - frame_range[0])%stride == 0): 
-                # skip header
-                f.readline()
-                # save data into string
-                data_str = ""
-                for i in range(config.n_particles):
-                    data_str += f.readline()        
-                # read in data
-                frame = np.genfromtxt(StringIO(data_str), delimiter=" ")
-                forces[idx_traj] = np.array(frame.tolist())
-                idx_traj += 1
-            else:
-                # skip frame
-                for i in range(config.n_particles + 1):
-                    f.readline()
-    f.close()
-            
-    return forces
-
-def load_results(config: Optional[Config],
-                 filetype: str = ResultsFiletypes.Trajectory.value,
-                 frame_range: list = None,
-                 stride: int = 1):
-    
-    if filetype not in [i.value for i in ResultsFiletypes]:
-        raise ValueError(f"Filetype '{filetype}' is not a valid filetype.\n Valid filetypes are {[i.value for i in ResultsFiletypes]}")
-
-    # if config is given as a path, load it
-    if isinstance(config, str):
-        config = Config.from_toml(config)
-    
-    # get number of frames
-    n_frames = get_number_of_frames(config)
-    
-    # handle frame range input
-    frame_range = _validate_frame_range(frame_range, n_frames)
-    
-    # get h5py filename
-    fname_h5 = get_path(config, filetype=Filetypes.Results.value)
-    
-    if not os.path.exists(fname_h5):
-        raise FileNotFoundError(f"Results file '{fname_h5}' not found")
-    
-    with h5py.File(fname_h5, "r") as h5_file:
-        if filetype in h5_file.keys():
-            try:
-                return h5_file[filetype][frame_range[0]:frame_range[1]:stride]
-            except:
-                raise ValueError(f"Frame range {frame_range} is not valid.\nThe shape dataset '{filetype}' is {h5_file[filetype].shape}.")
-        else:
-            raise ValueError(f"Dataset '{filetype}' is not contained in.\nValid filetypes are {[i.value for i in ResultsFiletypes]}")
-    
-
-# TODO THIS IS INSANE TO LOAD THE WHOLE TRAJ INTO MEMORY WHY WOULD YOU DO THAT??
-def load_trajectory_h5(config: Optional[Config],
-                       frame_range: list = None,
-                       frame: int = None,
-                       stride: int = 1):
-    
-    """
-    Loads Trajectory into numpy array forthe given range of frames.
-    If frame_range is None, the whole trajectory is loaded.
-    """
-    
-    # if config is given as a path, load it
-    if isinstance(config, str):
-        config = Config.from_toml(config)
-    
-    if frame is not None:
-        frame_range = list([frame, frame+1])
-    
-    n_frames = get_number_of_frames(config)
-    frame_range = _validate_frame_range(frame_range, n_frames)
-    
-    # get traj path
-    fname_traj = get_path(config, filetype="results")
-    
-    if not os.path.exists(fname_traj):
-        print(f"results file {fname_traj} not found")
-        load_gro = "y" == input(f"Load trajectory from {get_path(config, filetype='trajectory')}? (y/n) ")
-        if load_gro:
-            trajectory = load_trajectory(config, frame_range=frame_range, stride=stride)
-            save_h5 = "y" == input(f"Save trajectory to {fname_traj}? (y/n) ")
-            if save_h5:
-                with h5py.File(fname_traj, "a") as h5:
-                    h5.create_dataset("trajectory", data=trajectory)
-            return trajectory
-        else:
-            raise FileNotFoundError(f"trajectory file {fname_traj} not found")
-    traj_h5 = h5py.File(fname_traj, "r")
-    trajectory = traj_h5["trajectory"][frame_range[0]:frame_range[1]:stride]
-    
-    return trajectory
     
 def _validate_frame_range(frame_range, n_frames):
     if frame_range is None:
@@ -470,99 +248,24 @@ def _validate_frame_range(frame_range, n_frames):
         raise ValueError("Frame range is not valid: index 0 is larger than index 1")
     
     return frame_range
-        
-    
-def load_trajectory(config: Optional[Config],
-                    frame_range: list = None,
-                    frame: int = None,
-                    stride: int = 1):
-    """
-    Loads Trajectory into numpy array forthe given range of frames.
-    If frame_range is None, the whole trajectory is loaded.
-    """
-    
-    # if config is given as a path, load it
-    if isinstance(config, str):
-        config = Config.from_toml(config)
-    
-    # get traj path
-    fname_traj = get_path(config, filetype="trajectory")
-    
-    # get number of frames
-    n_frames = get_number_of_frames(config)
-    
-    if frame is not None:
-        frame_range = list([frame, frame+1])
-    
-    # handle frame range input
-    frame_range = _validate_frame_range(frame_range, n_frames)
-    
-    #define a np.dtype for gro array/dataset (hard-coded for now)
-    gro_dt = np.dtype([('col1', 'S4'), ('col2', 'S4'), ('col3', int), 
-                    ('col4', float), ('col5', float), ('col6', float)])
 
-    # initialize trajectory array
-    traj = np.zeros(((frame_range[1] - frame_range[0] - 1)//stride + 1, config.n_particles, 3))
-    
-    idx_traj = 0
-    with open(fname_traj, "r") as f:
-        
-        for idx_frame in range(n_frames):
-            if idx_frame == frame_range[1]:
-                break
-            if (frame_range[0] <= idx_frame) and ((idx_frame - frame_range[0])%stride == 0): 
-                # skip header
-                for i in range(2):
-                    f.readline()
-                # save data into string
-                data_str = ""
-                for i in range(config.n_particles):
-                    data_str += f.readline()        
-                # skip box size
-                f.readline()
-                
-                # check if data string is empty -> end of file
-                if data_str == "":
-                    print(f"Warning: Trajectory of {config.name_sys} unexpectedly ended at frame {idx_frame}.")
-                    traj = traj[:idx_traj]
-                    break
-                
-                # read in data
-                frame = np.genfromtxt(StringIO(data_str), dtype=gro_dt, usecols=(3, 4, 5))
-                traj[idx_traj] = np.array(frame.tolist())
-                idx_traj += 1
-            else:
-                # skip frame
-                for i in range(config.n_particles + 3):
-                    f.readline()
-    
-        # check if there are more frames in the file
-        if frame_range[1] == n_frames:
-            # skip frames that are not read beacause of stride
-            for i in range((frame_range[1]-frame_range[0])%stride):
-                for j in range(config.n_particles + 3):
-                    f.readline() # skip line
-            data_str = ""
-            for i in range(config.n_particles + 3):
-                data_str += f.readline()
-            if data_str != "":
-                print(f"Warning: Trajectory of {config.name_sys} unexpectedly continued after frame {frame_range[1]}.")
-                print(data_str)
-            
-    return traj
-
-def save_trajectory(config: Optional[Config],
+def convert_trajectory(config: Optional[Config],
                     trajectory: np.ndarray,
                     fname: str = None,
-                    type: str = "gro",
+                    trajtype: str = "gro",
                     overwrite: bool = False):
+    """
+    Converts trajectory (3d nd.array) to a specified fieltype
+    (For now only type "gro" is possible)
+    """
+    
     if isinstance(config, str):
         config = Config.from_toml(config)
     if len(trajectory.shape) != 3:
         raise ValueError("trajectory must be a 3d array")
-    if fname is None:
-        fname = get_path(config, filetype="trajectory", overwrite=overwrite)
-    if type == "gro":
+    if trajtype == "gro":
+        if fname is None:
+            fname = get_path(config, filetype=ResultsFiletypes.TrajectoryGro.value, overwrite=overwrite)
         n_atoms = len(trajectory[0])
         for i, frame in enumerate(trajectory):
             _write_frame_gro(n_atoms, frame, i, fname)
@@ -585,7 +288,7 @@ def traj_h5_to_gro(config: Optional[Config],
     
     # get traj path
     if fname is None:
-        fname_traj = get_path(config, filetype="trajectory")
+        fname_traj = get_path(config, filetype=ResultsFiletypes.TrajectoryGro.value)
     
         if frame_range != None:
             frame_range = _validate_frame_range(frame_range, n_frames)
@@ -597,54 +300,15 @@ def traj_h5_to_gro(config: Optional[Config],
     frame_range = _validate_frame_range(frame_range, n_frames)
     
     # get h5py filename
-    fname_h5 = get_path(config, filetype="results")
+    fname_h5 = get_path(config, filetype=ResultsFiletypes.Trajectory.value)
     
     if not os.path.exists(fname_h5):
-         raise FileNotFoundError(f"Results file '{fname_h5}' not found")
+         raise FileNotFoundError(f"Trajectory file '{fname_h5}' not found")
     
     with h5py.File(fname_h5, "r") as h5_file:
-         if "trajectory" in h5_file.keys():
-               trajectory = h5_file["trajectory"][frame_range[0]:frame_range[1]:stride]
-               save_trajectory(config, trajectory, fname=fname_traj, overwrite=overwrite, type="gro")
-         else:
-               raise ValueError(f"Dataset 'trajectory' is not contained in {fname_h5}.")
-            
-def cut_trajectory(config: Optional[Config],
-                   frame_range: list = None,
-                   particle_indices: list = None,
-                   fname: str = None,
-                   type: str = "gro"):
-    """
-    saves traejctory as a new gro file with the given frame range.
-    """
-    
-    if isinstance(config, str):
-        config = Config.from_toml(config)
-    
-    fname_traj = get_path(config, filetype="trajectory", overwrite=True)
-    
-    # get number of frames
-    n_frames = get_number_of_frames(config)
-    
-    if frame_range is None:
-        frame_range = (0, n_frames)
-    if frame_range[0] == None:
-        frame_range[0] = 0
-    if frame_range[1] == None:
-        frame_range[1] = n_frames
-    if frame_range[0] < 0 or frame_range[1] > n_frames:
-        raise ValueError("frame range out of bounds")
+        trajectory = h5_file[ResultsFiletypes.Trajectory.value][frame_range[0]:frame_range[1]:stride]
+        convert_trajectory(config, trajectory, fname=fname_traj, overwrite=overwrite, trajtype="gro")
 
-    traj = load_trajectory(config, frame_range=frame_range)
-    
-    if particle_indices is not None:
-        traj = traj[:, particle_indices, :]
-        
-    if fname is None:
-        fname = Path(fname_traj).parent / f"traj_{config.name_sys}_frame_{frame_range[0]}_to_{frame_range[1]}_nparticles_{len(particle_indices)}.gro"
-    
-    if type == "gro":
-        save_trajectory(config, traj, fname=fname)
 
     
 def _write_frame_gro(n_atoms, coordinates, time, fname, comment="trajectory", box=None, precision=3):
@@ -664,39 +328,7 @@ def _write_frame_gro(n_atoms, coordinates, time, fname, comment="trajectory", bo
 
 def get_number_of_frames(config: Optional[Config]):
     return int(config.steps/config.stride)
-
     
-def get_distances(config: Optional[Config],
-                  frame = None,
-                  range: tuple = None):
-    
-    if isinstance(config, str):
-        config = Config.from_toml(config)
-    if frame is None:
-        frame = np.load(get_path(config, filetype="init_pos"))
-    if range is None:
-        range = (0, config.lbox/2)
-    if range[0] < 0 or range[1] > config.lbox/2:
-        raise ValueError("range out of bounds")
-    
-    # make 3d verion of meshgrid
-    r_left = np.tile(frame, (config.n_particles, 1, 1)) # repeats vector along third dimension len(a) times
-    r_right = np.reshape(np.repeat(frame, config.n_particles, 0), (config.n_particles, config.n_particles, 3)) # does the same but "flipped"
-
-    directions = r_left - r_right # this is right considering the mesh method. dir[i, j] = r_j - r_i
-
-    # TODO DOES THIS MAKE SENSE ???????????
-    # apply minimum image convetion
-    directions -= config.lbox*np.round(directions/config.lbox)
-
-    # calculate distances and apply interaction cutoff
-    distances = np.linalg.norm(directions, axis=2)
-
-    # apply cutoff
-    mask = distances < config.cutoff_pbc
-    
-    # only return distances, that lie within the interaction cutoff
-    return distances[mask]     
 
 def delete_system(config: Optional[Config],
                   only_results: bool = False,
@@ -726,20 +358,6 @@ def delete_system(config: Optional[Config],
     else:
         print("Aborted.\n")
 
-def update_system_version(config: Optional[Config],
-                          Topology: Optional[Topology],
-                          only_results: bool = False):
-    """
-    Saves config, initial positions and topology of a system,
-    using the specified version in the sys_name specified in the config.
-    """
-    
-    if isinstance(config, str):
-        config = Config.from_toml(config)
-    
-    print("function does nothing (todo)")
-    return
-
 def get_timestep_seconds(config: Optional[Config],
                         monomer_tag = 0):
         """
@@ -747,9 +365,11 @@ def get_timestep_seconds(config: Optional[Config],
         """
         if isinstance(config, str):
             config = Config.from_toml(config)
-        top = Topology(config)
+            
+        params = toml.load(open(get_path(config, "parameters"), encoding="UTF-8"))
+        mobility = np.array(params["mobilities"])
         
-        mu = top.mobility[monomer_tag]  # mobility of the system in reduced units
+        mu = mobility[monomer_tag]  # mobility of the system in reduced units
         a = 1e-9*config.r0_nm           # m, reduced legth scale: PEG monomere radius
         r = 1*a                         # m, particle radius
 
@@ -763,86 +383,60 @@ def get_timestep_seconds(config: Optional[Config],
         dt = config.stride*dt_step*config.timestep # s
         
         return dt
+
+# TODO THIS IS INSANE TO LOAD THE WHOLE TRAJ INTO MEMORY WHY WOULD YOU DO THAT??
+# def load_trajectory_h5(config: Optional[Config],
+#                        frame_range: list = None,
+#                        frame: int = None,
+#                        stride: int = 1,
+#                        locking=None):
     
-def correlation(a,b=None,subtract_mean=False):
-    """
-    henriks correlation function
-    """
-
-    meana = int(subtract_mean)*np.mean(a)
-
-    a2 = np.append(a-meana, np.zeros(2**int(np.ceil((np.log(len(a))/np.log(2))))-len(a)))
-
-    data_a = np.append(a2, np.zeros(len(a2)))
-
-    fra = np.fft.fft(data_a)
-
-    if b is None:
-
-        sf = np.conj(fra)*fra
-
-    else:
-
-        meanb = int(subtract_mean)*np.mean(b)
-
-        b2 = np.append(b-meanb, np.zeros(2**int(np.ceil((np.log(len(b))/np.log(2))))-len(b)))
-
-        data_b = np.append(b2, np.zeros(len(b2)))
-
-        frb = np.fft.fft(data_b)
-
-        sf = np.conj(fra)*frb
-
-    res = np.fft.ifft(sf)
-
-    cor = np.real(res[:len(a)])/np.array(range(len(a),0,-1))
-
-    return cor
-
+#     """
+#     Loads Trajectory into numpy array forthe given range of frames.
+#     If frame_range is None, the whole trajectory is loaded.
+#     """
     
-# def rdf(self,
-#             r_range = None,
-#             n_bins = None,
-#             bin_width = 0.05,
-#             save=True,
-#             overwrite=False):
-        
-#         if r_range is None:
-#             r_range = np.array([1.5, config.lbox/2])
-            
-#         if n_bins is None:   
-#             n_bins = int((r_range[1] - r_range[0]) / bin_width)
-        
-#         fname_top = self.create_fname(filetype="topology")
+#     # if config is given as a path, load it
+#     if isinstance(config, str):
+#         config = Config.from_toml(config)
+    
+#     if frame is not None:
+#         frame_range = list([frame, frame+1])
+    
+#     n_frames = get_number_of_frames(config)
+#     frame_range = _validate_frame_range(frame_range, n_frames)
+    
+#     # get traj path
+#     fname_traj = get_path(config, filetype="trajectory")
+    
+#     if not os.path.exists(fname_traj):
+#         print(f"results file {fname_traj} not found")
+#         load_gro = "y" == input(f"Load trajectory from {get_path(config, filetype='trajectory_gro')}? (y/n) ")
+#         if load_gro:
+#             trajectory = load_trajectory(config, frame_range=frame_range, stride=stride)
+#             save_h5 = "y" == input(f"Save trajectory to {fname_traj}? (y/n) ")
+#             if save_h5:
+#                 with h5py.File(fname_traj, "a", locking=locking) as h5:
+#                     h5.create_dataset("trajectory", data=trajectory)
+#             return trajectory
+#         else:
+#             raise FileNotFoundError(f"trajectory file {fname_traj} not found")
+#     traj_h5 = h5py.File(fname_traj, "r",locking=locking)
+#     trajectory = traj_h5["trajectory"][frame_range[0]:frame_range[1]:stride]
+    
+#     return trajectory
 
-#         if not os.path.exists(fname_top):
-#             self.create_topology_pdb()
 
-
-#         natoms = len(self.trajectory[0])
-#         lbox = config.lbox
-
-#         # create unic cell information
-#         uc_vectors = np.repeat([np.array((lbox, lbox, lbox))], len(self.trajectory), axis=0)
-#         uc_angles = np.repeat([np.array((90,90,90))], len(self.trajectory), axis=0)
-
-#         # create mdtraj trajectory object
-#         trajectory = md.Trajectory(self.trajectory, md.load(fname_top).topology, unitcell_lengths=uc_vectors, unitcell_angles=uc_angles)
-        
-#         # create bond pair list
-#         pairs = list()
-#         for i in range(natoms-1):
-#             for j in range(i+1, natoms):
-#                 pairs.append((i, j))
-                
-#         pairs = np.array(pairs)
-        
-#         self.number_density = len(pairs) * np.sum(1.0 / trajectory.unitcell_volumes) / natoms / len(trajectory)
-
-#         r, gr = md.compute_rdf(trajectory, pairs, r_range=(1.5, 20), bin_width=0.05)
-        
-#         if save == True:
-#             fname = self.create_fname(filetype="rdf", overwrite=overwrite)
-#             np.save(fname, np.array([r, gr]))
-        
-#         return r, gr
+# def update_system_version(config: Optional[Config],
+#                           Topology: Optional[Topology],
+#                           only_results: bool = False):
+#     """
+#     Saves config, initial positions and topology of a system,
+#     using the specified version in the sys_name specified in the config.
+#     """
+    
+#     if isinstance(config, str):
+#         config = Config.from_toml(config)
+    
+#     print("function does nothing (todo)")
+#     return

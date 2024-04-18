@@ -12,7 +12,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from time import time
-from copy import deepcopy
+from copy import deepcopy 
 
 class System:
     
@@ -42,22 +42,31 @@ class System:
         self.version                = ""
         self.steps_total            = 0
         
+        #! TODO TODO TODO TODO TODO TODO
+        # distances do not calculate properly anymore using cell linked lists
+        # only the cones within cutoff pbc are calculated!
+        
+        # TODO THESE MUST ONLY BE DEFINED IF write is set to true respectively
         self.traj_chunk             = None
         self.force_chunk            = None
         self.dist_chunk             = None
         
         # TODO IMPLEMENT THIS PROPERLY
         self.mobility_list          = None
-        self.bonds                  = None
+        
+        self.cell_index             = None
+        self.neighbor_cells_idx     = None
+        self.head_array             = None
+        self.list_array             = None
+        self.n_cells                = None
+        self.cell_length            = None
+        self.n_neighbor_cells       = None
         
         self.setup()
         
-    # THIS !!!!!
-    # TODO ceneter box around 0
-    
-    #TODO
-    #! first distances frame is appearently all zeros
-    
+    #! TODO TODO TODO TODO TODO TODO
+    # ADD "use forces" TO TOPOLOGY  
+      
     def setup(self):
         
         self.n_particles     = self.config.n_particles
@@ -68,6 +77,7 @@ class System:
         self.traj_chunk      = np.zeros((self.config.chunksize, self.n_particles, 3))
         self.force_chunk     = np.zeros((self.config.chunksize, self.n_particles, 3))
         self.dist_chunk      = np.zeros((self.config.chunksize, self.n_particles, self.n_particles))
+        self.distances       = np.zeros((self.config.chunksize, self.n_particles, self.n_particles))
         
         self.forces          = np.zeros((self.n_particles, 3), dtype=np.float64)
         
@@ -76,8 +86,6 @@ class System:
         self.B_debye         = np.sqrt(self.config.c_S)*self.r0_beeds_nm/10 # from the relationship in the Hansing thesis [c_S] = mM
         self.n_frames        = int(np.ceil(self.config.steps/self.config.stride))
         self.mobility_list   = np.array([self.topology.mobility[i] for i in self.topology.tags], ndmin=2).reshape(-1, 1)
-        
-        
         
         # calculate debye cutoff from salt concentration
         if self.config.cutoff_debye == None:
@@ -90,6 +98,7 @@ class System:
                 self.idx_table[0, i, j] = i
                 self.idx_table[1, i, j] = j
         
+        # TODO at this stage of the project using pbc is necessary for the simulations to work
         # check for pbc
         if self.config.pbc == True: 
             
@@ -98,23 +107,48 @@ class System:
                 cutoff = np.max((self.config.cutoff_debye, self.config.cutoff_LJ))
                 # minimal possible cutoff is 1.5*r0
                 # otherwise nn calculation breaks
-                if cutoff < 3:
-                    cutoff = 3
+                if cutoff < 4:
+                    if self.config.lbox < 8:
+                        raise ValueError("Box length is too small for cutoff = 4")
+                    cutoff = 4
                 self.config.cutoff_pbc = cutoff
-                   
-            self.create_shifts()
-        
-        # create bond_list
-        self.bonds = []
-        for i in range(self.n_particles-1):
-            for j in range(i+1, self.n_particles):
-                if self.topology.bond_table[i, j] == True:
-                    self.bonds.append((i, j))
-        self.bonds = np.array(self.bonds)
         
         # load positions
         self.set_positions(self.topology.positions)
+        
+        # Define all necessary cell-linked list arrays
+        # NOTE the following only works if pbc is used
+        
+        # calculate the number of cells in each direction
+        self.n_cells = int(self.box_length/self.config.cutoff_pbc)
+        self.cell_length = self.box_length/self.n_cells
+        
+        # get the indices of the neighboring cells and self with shape (n_neighbor_cells + 1, 3)
+        self.neighbor_cells_idx = np.indices((3, 3, 3), dtype=np.int16).reshape(3, -1).T - 1
+        self.n_neighbor_cells = self.neighbor_cells_idx.shape[0]
+        
+        self.apply_pbc()
+        
+        self.head_array = -np.ones((self.n_cells, self.n_cells, self.n_cells), dtype=np.int16)
+        self.list_array = -np.ones(self.n_particles, dtype=np.int16)
+        
+        self.update_linked_list()
 
+    def update_linked_list(self):
+        """
+        updates the list and head array for the current positions
+        """
+        
+        self.list_array.fill(-1)
+        self.head_array.fill(-1)
+        
+        # get cell index for each particle
+        self.cell_index = np.floor(self.positions/self.cell_length).astype(np.int16)
+        
+        for i, cell_idx in enumerate(self.cell_index):
+            self.list_array[i] = self.head_array[cell_idx[0], cell_idx[1], cell_idx[2]]
+            self.head_array[cell_idx[0], cell_idx[1], cell_idx[2]] = i
+    
     def print_sim_info(self):
         """
         print the config
@@ -129,36 +163,6 @@ class System:
         output = output.replace(" ", "\n")
         output = output.replace("=", " = ")
         print(output)
-        return
-    
-    def create_shifts(self):
-        # array that shifts box for pbc
-        self.shifts = np.array(((self.box_length,   0,                0),
-                                (0,                 self.box_length,  0),
-                                (0,            0,                     self.box_length),
-                                (self.box_length,   self.box_length,  0),
-                                (self.box_length,   0,                self.box_length),
-                                (0,                 self.box_length,  self.box_length),
-                                (self.box_length,   self.box_length,  self.box_length),
-                                (-self.box_length,  0,                0),
-                                (0,                -self.box_length,  0),
-                                (0,            0,                    -self.box_length),
-                                (-self.box_length,  self.box_length,  0),
-                                (-self.box_length,  0,                self.box_length),
-                                (0,                -self.box_length,  self.box_length),
-                                (self.box_length,  -self.box_length,  0),
-                                (self.box_length,   0,               -self.box_length),
-                                (0,                 self.box_length, -self.box_length),
-                                (-self.box_length, -self.box_length,  0),
-                                (-self.box_length,  0,               -self.box_length),
-                                (0,                -self.box_length, -self.box_length),
-                                (-self.box_length,  self.box_length,  self.box_length),
-                                (self.box_length,  -self.box_length,  self.box_length),
-                                (self.box_length,   self.box_length, -self.box_length),
-                                (-self.box_length, -self.box_length,  self.box_length),
-                                (-self.box_length,  self.box_length, -self.box_length),
-                                (self.box_length,  -self.box_length, -self.box_length),
-                                (-self.box_length, -self.box_length, -self.box_length)))
         return
     
     def set_timestep(self, timestep):
@@ -393,34 +397,34 @@ class System:
         
         return
     
-    def simulate(self, steps=None, max_dist=None, check_explosion=True):
+    def simulate(self, steps=None):
         """
-        Simulates the brownian motion of the system with the defined forcefield using forward Euler.
+        Simulates the overdamped langevin dynamics of the system with the defined forcefield using forward Euler.
         """
         
         if steps == None:
             steps = self.config.steps
-            
-        if max_dist == None:
-            max_dist = self.config.cutoff_pbc
         
         t_start = time()
-        
-        idx_chunk = 1 # because traj_chunk[0] is already the initial position
-        idx_traj = 0
-        
-        # initialize results h5 file
-        fh5_results = h5py.File(get_path(self.config, filetype='results'), 'w-')
         
         n_frames = get_number_of_frames(self.config)
         
         # save initial pos
         if self.config.write_traj==True:
             self.traj_chunk[0] = self.positions
-            fh5_results.create_dataset("trajectory", shape=(n_frames, self.n_particles, 3), dtype="float64")
-            
-        if self.config.write_forces==True:
-            rmc.get_forces(
+            #fh5_results.create_dataset("trajectory", shape=(n_frames, self.n_particles, 3), dtype="float16")
+            fh5_traj = h5py.File(get_path(self.config, filetype='trajectory'), 'w-')
+            fh5_traj.create_dataset("trajectory", shape=(n_frames, self.n_particles, 3), dtype="float16")
+        
+        # define flag for distance writing
+        if self.config.write_distances:
+            write_distances = True
+            fh5_distances = h5py.File(get_path(self.config, filetype='distances'), 'w-')
+            fh5_distances.create_dataset("distances", shape=(n_frames, self.n_particles, self.n_particles), dtype="float16")
+        else:    
+            write_distances = False
+        
+        rmc.get_forces_cell_linked(
                 self.positions,
                 self.topology.tags,
                 self.topology.bond_table,
@@ -432,33 +436,85 @@ class System:
                 self.config.lB_debye,
                 self.B_debye,
                 self.forces,
-                self.dist_chunk[idx_chunk],
+                self.dist_chunk[0],
                 self.box_length,
                 self.config.cutoff_pbc**2,
                 self.n_particles,
-                3,
-                False,
-                True,
-                True,
-                False
+                3,                          # number of dimensions
+                write_distances,
+                True,                       # use bond force
+                True,                       # use LJ force
+                False,                      # use Debye force
+                self.neighbor_cells_idx,
+                self.head_array,
+                self.list_array,
+                self.n_cells,
+                self.n_neighbor_cells
             )
             
+        if self.config.write_forces==True:
+            # rmc.get_forces(
+            #     self.positions,
+            #     self.topology.tags,
+            #     self.topology.bond_table,
+            #     self.topology.force_constant_nn,
+            #     self.topology.r0_bond,
+            #     self.topology.sigma_lj,
+            #     self.topology.epsilon_lj,
+            #     self.topology.q_particle,
+            #     self.config.lB_debye,
+            #     self.B_debye,
+            #     self.forces,
+            #     self.dist_chunk[0],
+            #     self.box_length,
+            #     self.config.cutoff_pbc**2,
+            #     self.n_particles,
+            #     3,
+            #     False,
+            #     True,
+            #     True,
+            #     False
+            # )
+            
             self.force_chunk[0] = self.forces
-            fh5_results.create_dataset("forces", shape=(n_frames, self.n_particles, 3), dtype="float64")
+            fh5_forces = h5py.File(get_path(self.config, filetype='forces'), 'w-')
+            fh5_forces.create_dataset("forces", shape=(n_frames, self.n_particles, 3), dtype="float32")
         
-        # define flag for distance writing
-        if self.config.write_distances:
-            write_distances = True
-            fh5_results.create_dataset("distances", shape=(n_frames, self.n_particles, self.n_particles), dtype="float64")
-        else:    
-            write_distances = False
+        idx_chunk = 1 # because traj_chunk[0] is already the initial position
+        idx_traj = 0
         
         print(f"\nStarting simulation with {steps} steps.")
         for step in tqdm(range(1, steps)):
             
             # calculate forces
             self.forces.fill(0)
-            rmc.get_forces(
+            
+            # rmc.get_forces(
+            #     self.positions,
+            #     self.topology.tags,
+            #     self.topology.bond_table,
+            #     self.topology.force_constant_nn,
+            #     self.topology.r0_bond,
+            #     self.topology.sigma_lj,
+            #     self.topology.epsilon_lj,
+            #     self.topology.q_particle,
+            #     self.config.lB_debye,
+            #     self.B_debye,
+            #     self.forces,
+            #     self.dist_chunk[idx_chunk],
+            #     self.box_length,
+            #     self.config.cutoff_pbc**2,
+            #     self.n_particles,
+            #     3,
+            #     write_distances,
+            #     True,
+            #     True,
+            #     False
+            # )
+            
+            self.update_linked_list()
+            
+            rmc.get_forces_cell_linked(
                 self.positions,
                 self.topology.tags,
                 self.topology.bond_table,
@@ -474,11 +530,16 @@ class System:
                 self.box_length,
                 self.config.cutoff_pbc**2,
                 self.n_particles,
-                3,
+                3,                          # number of dimensions
                 write_distances,
-                True,
-                True,
-                False
+                True,                       # use bond force
+                True,                       # use LJ force
+                False,                      # use Debye force
+                self.neighbor_cells_idx,
+                self.head_array,
+                self.list_array,
+                self.n_cells,
+                self.n_neighbor_cells
             )
             
             # reset distance flag until next stride
@@ -506,26 +567,16 @@ class System:
                 
                 if idx_chunk == self.config.chunksize:
                     if self.config.write_traj:
-                        fh5_results["trajectory"][idx_traj:idx_traj+self.config.chunksize] = self.traj_chunk
+                        fh5_traj["trajectory"][idx_traj:idx_traj+self.config.chunksize] = self.traj_chunk
                     
                     if self.config.write_forces:    
-                        fh5_results["forces"][idx_traj:idx_traj+self.config.chunksize] = self.force_chunk
+                        fh5_forces["forces"][idx_traj:idx_traj+self.config.chunksize] = self.force_chunk
                         
                     if self.config.write_distances:
-                        fh5_results["distances"][idx_traj:idx_traj+self.config.chunksize] = self.dist_chunk
+                        fh5_distances["distances"][idx_traj:idx_traj+self.config.chunksize] = self.dist_chunk
                     
                     idx_traj += self.config.chunksize
                     idx_chunk = 0
-                
-                    # if check_explosion: 
-                    #     #! THIS TYPE OF INDEXING DOESNT WORK ANYMORE
-                    #     d = self.positions[self.bonds[:, 0]] - self.positions[self.bonds[:, 1]]
-                    #     d -= np.round(d/self.box_length)*self.box_length
-                    #     if np.any(np.abs(d) > max_dist):
-                    #         print(f"Distances between bonded atoms larger than maxdist = {max_dist}")
-                    #         print("System exploded")
-                    #         print("simulation Step", step)
-                    #         break
                 
             self.steps_total += 1
             
@@ -536,11 +587,18 @@ class System:
         # fill rest of trajectory in case the steps//stride is not a multiple of the chunksize
         if idx_traj!= n_frames:
             if self.config.write_traj:
-                fh5_results["trajectory"][idx_traj:] = self.traj_chunk[:idx_chunk-1]
+                fh5_traj["trajectory"][idx_traj:] = self.traj_chunk[:idx_chunk]
             if self.config.write_forces:
-                fh5_results["forces"][idx_traj:] = self.force_chunk[:idx_chunk-1]
-                
-        fh5_results.close()
+                fh5_forces["forces"][idx_traj:] = self.force_chunk[:idx_chunk]
+            if self.config.write_distances:
+                fh5_distances["distances"][idx_traj:] = self.dist_chunk[:idx_chunk]
+        
+        if self.config.write_traj:        
+            fh5_traj.close()
+        if self.config.write_forces:
+            fh5_forces.close()
+        if self.config.write_distances:    
+            fh5_distances.close()
         
         # save config
         self.config.save()

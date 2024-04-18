@@ -1,0 +1,15 @@
+- CLEAN UP WHOLE PACKAGE
+
+- create box with b*Sqrt(L) chain length
+
+- do NOT save distances
+
+- NEIGHBOUR TABLES
+
++ create different h5 files for simulation results and for analysis
+  => the h5 file cannot be accesed if its already in use
+
+- clean h5 analysis version, so it doesnt brak when loading
+
+- am I in the ELASTIC REGIME?
+
